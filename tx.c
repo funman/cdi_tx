@@ -50,6 +50,7 @@
 #define UBUF_DEFAULT_SIZE_A    8968
 
 #define FI_DEFAULT_PORT 47592
+#define CTRL_PORT 1234
 
 
 #define MAX_IP_STRING_LENGTH                (64)
@@ -76,18 +77,12 @@ do {                    \
     }                   \
 } while (0)
 
-typedef enum {
-    kProbeStateIdle, // Waiting for ProtocolVersion
-    kProbeStateEfaProbe, // Got ProtocolVersion, waiting for probe packets through EFA
-    kProbeStateEfaTxProbeAcks, // Received probe packets, sends Connected
-    kProbeStateEfaConnected, // Connected
-} ProbeState;
 
-
+static char *src;
+static char *dst;
+static char *port;
 /** udp socket descriptor */
 static int fd;
-/* */
-static struct sockaddr_in dst;
 
 ////
 static int max_msg_size;
@@ -101,13 +96,13 @@ static struct fi_info *fi;
 static struct fid_fabric *fabric;
 static struct fid_domain *domain;
 static struct fid_ep *ep;
-static struct fid_cq *rxcq;
+static struct fid_cq *txcq;
 static struct fid_mr *mr;
 static struct fid_av *av;
 
-static uint64_t rx_seq, rx_cq_cntr;
+static uint64_t tx_seq, tx_cq_cntr;
 
-static void *buf, *rx_buf;
+static void *buf, *tx_buf;
 static size_t x_size;
 
 static uint8_t state;
@@ -118,7 +113,6 @@ static char senders_ip_str[MAX_IP_STRING_LENGTH+1];
 
 static struct uref *output_uref;
 
-static ProbeState probe_state;
 static uint16_t pkt_num;
 static char ip[INET6_ADDRSTRLEN];
 
@@ -126,6 +120,8 @@ static size_t width;
 static size_t height;
 
 static size_t buf_size;
+
+static fi_addr_t remote_fi_addr;
 
 typedef enum {
     kProbeCommandReset = 1, ///< Request to reset the connection. Start with 1 so no commands have the value 0.
@@ -247,32 +243,34 @@ static int get_cq_comp(struct fid_cq *cq, uint64_t *cur, uint64_t total)
     return 0;
 }
 
-static ssize_t rx(void)
+static ssize_t tx(void)
 {
-    if (get_cq_comp (rxcq, &rx_cq_cntr, rx_seq))
+    if (get_cq_comp (txcq, &tx_cq_cntr, tx_seq))
         return -1;
 
-    uint64_t n = rx_cq_cntr % 3000;
+    uint64_t n = tx_cq_cntr % 3000;
 
     struct iovec msg_iov = {
-        .iov_base = (uint8_t*)rx_buf + n * UBUF_DEFAULT_SIZE_A,
+        .iov_base = (uint8_t*)tx_buf + n * UBUF_DEFAULT_SIZE_A,
         .iov_len = UBUF_DEFAULT_SIZE,
     };
+//    struct fi_context ctx[2];
 
     struct fi_msg msg = {
         .msg_iov = &msg_iov,
         .desc = fi_mr_desc (mr),
         .iov_count = 1,
         .addr = 0,
-        .context = NULL,
+        .context = NULL, //ctx,
         .data = 0,
     };
 
-    ssize_t s = fi_recvmsg(ep, &msg, FI_RECV);
+    printf(".\n");
+    ssize_t s = fi_sendmsg(ep, &msg, FI_TRANSMIT_COMPLETE);
     if (!s)
-        rx_seq++;
+        tx_seq++;
     else {
-        fprintf(stderr, "fi_recvmsg\n");
+        fprintf(stderr, "fi_sendmsg\n");
     }
 
     return msg_iov.iov_len;
@@ -309,195 +307,6 @@ static uint16_t CalculateChecksum(const uint8_t *buf, int size, const uint8_t *c
     cksum = (cksum >> 16) + (cksum & 0xffff);
     cksum += (cksum >> 16);
     return (uint16_t)(~cksum);
-}
-
-static void transmit(ProbeCommand cmd, bool requires_ack, ProbeCommand reply)
-{
-    uint8_t tx_buf[300];
-    memset(tx_buf, 0, sizeof(tx_buf));
-    uint8_t *buf = tx_buf;
-
-    // senders_version
-    *buf++ = 2;
-    *buf++ = 1;
-    *buf++ = 4;
-
-    // ProbeCommand
-    put_32le(buf, cmd);
-    buf += 4;
-
-    // senders_ip_str
-    strncpy((char*)buf, ip, MAX_IP_STRING_LENGTH - 1);
-    buf[MAX_IP_STRING_LENGTH - 1] = '\0';
-
-    buf += MAX_IP_STRING_LENGTH;
-
-    // senders_gid_array
-    uint8_t ipv6_gid[MAX_IPV6_GID_LENGTH];
-
-    size_t name_length = MAX_IPV6_GID_LENGTH;
-
-    int ret = fi_getname(&ep->fid, (void*)ipv6_gid, &name_length);
-    if (ret) {
-        fprintf(stderr, "CRAP\n");
-    } else {
-        memset(buf, 0, MAX_IPV6_GID_LENGTH);
-        memcpy(buf, ipv6_gid, name_length);
-    }
-
-    buf += MAX_IPV6_GID_LENGTH;
-
-    // senders_stream_name_str
-    buf += CDI_MAX_STREAM_NAME_STRING_LENGTH;
-
-    // senders_control_dest_port
-    uint16_t port = 47593; // TODO
-    put_16le(buf, port);
-    buf += 2;
-
-    // control_packet_num
-    put_16le(buf, ctrl_packet_num++);
-    buf += 2;
-
-    // checksum
-    uint8_t *csum = buf; /* written later */
-    put_16le(buf, 0);
-    buf += 2;
-
-    if (cmd == kProbeCommandAck) {
-        // ack_command
-        put_32le(buf, reply);
-        buf += 4;
-
-        // ack_control_packet_num
-        put_16le(buf, pkt_num);
-        buf += 2;
-    } else {
-        // requires_ack
-        *buf++ = !!requires_ack;
-    }
-
-    size_t n = buf - tx_buf;
-
-    uint16_t checksum = CalculateChecksum(tx_buf, n, NULL);
-
-    put_16le(csum, checksum);
-    ssize_t ss = sendto(fd, tx_buf, n, 0, (struct sockaddr*)&dst, sizeof(dst));
-    if (ss < 0)
-        perror("sendto");
-}
-
-static void tx_worker2(void)
-{
-    for (;;) {
-    uint64_t n = rx_cq_cntr % 3000;
-    uint8_t *buffer = rx_buf + n * UBUF_DEFAULT_SIZE_A;
-    ssize_t s = rx();
-
-    size_t offset = 0;
-    if (s <= 0)
-        return;
-
-    assert(s >= 9);
-    assert(s == UBUF_DEFAULT_SIZE);
-
-    uint8_t pt = buffer[0];
-    uint16_t seq = get_16le(&buffer[1]);
-    uint16_t num = get_16le(&buffer[3]);
-    uint32_t id = get_32le(&buffer[5]);
-    if (pt != kPayloadTypeDataOffset && pt != kPayloadTypeProbe && pt != kPayloadTypeData)
-        fprintf(stderr, "PT %s(%d) - seq %d num %d id %d\n", get_pt(pt), pt, seq, num, id);
-
-    buffer += 9;
-    s -= 9;
-
-    switch(pt) {
-    case kPayloadTypeData:
-        if (seq == 0) {
-            assert(s >= 4+8+8+8+2+8);
-            uint32_t total_payload_size = get_32le(buffer); buffer += 4;
-            uint64_t max_latency_microsecs = get_64le(buffer); buffer += 8;
-            uint32_t sec = get_32le(buffer); buffer += 4; /// The number of seconds since the SMPTE Epoch which is 1970-01-01T00:00:00.
-            uint32_t nsec = get_32le(buffer); buffer += 4; /// The number of fractional seconds as measured in nanoseconds. The value in this field is always less than 10^9.
-            // TODO : pts
-
-            uint64_t payload_user_data = get_64le(buffer); buffer += 8;
-
-            uint16_t  extra_data_size = get_16le(buffer); buffer += 2;
-
-            uint64_t tx_start_time_microseconds = get_64le(buffer); buffer += 8;
-            // TODO : mesure network latency?
-
-            fprintf(stderr,
-                    "total payload size %u max latency usecs %" PRId64 " PTP %u.%09u userdata %" PRIx64 " extradata %d tx_start_time_usec %" PRId64 "\n",
-
-                    total_payload_size,
-                    max_latency_microsecs,
-                    sec,
-                    nsec,
-                    payload_user_data,
-                    extra_data_size,
-                    tx_start_time_microseconds);
-
-            s -= 4+8+8+8+2+8;
-
-            //parse_cdi_extra(buffer, extra_data_size);
-            if (extra_data_size > s)
-                extra_data_size = s;
-            s -= extra_data_size;
-            buffer += extra_data_size;
-        }
-        break;
-
-    case kPayloadTypeDataOffset:
-        assert(s >= 4);
-        offset = get_32le(buffer);
-        buffer += 4; s -= 4;
-        break;
-    case kPayloadTypeKeepAlive:
-        break;
-    case kPayloadTypeProbe:
-        if (probe_state == kProbeStateEfaProbe) {
-            /* Don't wait for an arbitrary number of packets (EFA_PROBE_PACKET_COUNT) */
-            probe_state = kProbeStateEfaTxProbeAcks;
-            transmit(kProbeCommandConnected, false, 0);
-        }
-
-        s = 0;
-    default: break;
-    }
-
-    static bool go = false;
-    if (offset == 0)
-        go = true;
-    if (!go)
-        return;
-
-    static uint8_t x[5184000];
-    if (offset + s > 5184000)
-        s = 5184000 - offset;
-    memcpy(&x[offset], buffer, s);
-
-    if (offset + s == 5184000) {
-        const uint8_t *src = x;
-        for (int i = 0; i < 1920*1080; i += 2) {
-            uint8_t a = *src++;
-            uint8_t b = *src++;
-            uint8_t c = *src++;
-            uint8_t d = *src++;
-            uint8_t e = *src++;
-            //u[i/2] = (a << 2)          | ((b >> 6) & 0x03); //1111111122
-            //y[i+0] = ((b & 0x3f) << 4) | ((c >> 4) & 0x0f); //2222223333
-            //v[i/2] = ((c & 0x0f) << 6) | ((d >> 2) & 0x3f); //3333444444
-            //y[i+1] = ((d & 0x03) << 8) | e;                 //4455555555
-         }
-    }
-
-    if (offset + s >= 5184000) {
-        output_uref = NULL;
-        // out
-    }
-    }
 }
 
 static int alloc_msgs (void)
@@ -537,7 +346,7 @@ static int alloc_msgs (void)
     }
 
     memset (buf, 0, buf_size);
-    rx_buf = buf;
+    tx_buf = buf;
 
     RET(fi_mr_reg (domain, buf, buf_size,
             FI_RECV, 0, 0, 0, &mr, NULL));
@@ -549,7 +358,7 @@ static void tx_free(void)
 {
     fi_close(&mr->fid);
     fi_close(&ep->fid);
-    fi_close(&rxcq->fid);
+    fi_close(&txcq->fid);
     fi_close(&av->fid);
     fi_close(&domain->fid);
     fi_close(&fabric->fid);
@@ -562,8 +371,8 @@ static void tx_free(void)
 
 static void tx_alloc(void)
 {
-    rx_seq = 0;
-    rx_cq_cntr = 0;
+    tx_seq = 0;
+    tx_cq_cntr = 0;
     output_uref = NULL;
 
     max_msg_size = 0;
@@ -581,26 +390,29 @@ static void tx_alloc(void)
     hints->caps = FI_MSG;
     hints->mode = FI_CONTEXT;
     hints->domain_attr->mr_mode =
-        FI_MR_LOCAL | FI_MR_ALLOCATED | FI_MR_PROV_KEY | FI_MR_VIRT_ADDR;
+        FI_MR_LOCAL | FI_MR_ALLOCATED | /*FI_MR_PROV_KEY | */FI_MR_VIRT_ADDR;
 
     hints->fabric_attr->prov_name = (char*)"sockets";
     hints->ep_attr->type = FI_EP_RDM;
     hints->domain_attr->resource_mgmt = FI_RM_ENABLED;
     hints->domain_attr->threading = FI_THREAD_DOMAIN;
-    hints->rx_attr->comp_order = FI_ORDER_NONE;
+    hints->tx_attr->comp_order = FI_ORDER_NONE;
 
+    char *node = dst;
+    char service[12];
+    snprintf(service, sizeof(service), "%d", atoi(port) + 1);
     RET(fi_getinfo (FI_VERSION (FI_MAJOR_VERSION, FI_MINOR_VERSION),
-            NULL, NULL, FI_SOURCE /* ? */, hints, &fi));
+            node, service, 0/* ? */, hints, &fi));
 
     RET(fi_fabric (fi->fabric_attr, &fabric, NULL));
     RET(fi_domain (fabric, fi, &domain, NULL));
     struct fi_cq_attr cq_attr = {
         .wait_obj = FI_WAIT_NONE,
         .format = FI_CQ_FORMAT_DATA,
-        .size = fi->rx_attr->size,
+        .size = fi->tx_attr->size,
     };
 
-    RET(fi_cq_open (domain, &cq_attr, &rxcq, &rxcq));
+    RET(fi_cq_open (domain, &cq_attr, &txcq, &txcq));
 
     struct fi_av_attr av_attr = {
         .type = FI_AV_TABLE,
@@ -612,19 +424,10 @@ static void tx_alloc(void)
     RET(fi_endpoint (domain, fi, &ep, NULL));
 
     RET(fi_ep_bind(ep, &av->fid, 0));
-    RET(fi_ep_bind(ep, &rxcq->fid, FI_RECV));
+    RET(fi_ep_bind(ep, &txcq->fid, FI_TRANSMIT));
 
     RET(fi_enable (ep));
     RET(alloc_msgs());
-
-    fd = -1;
-    dst.sin_family = AF_INET;
-
-    probe_state = kProbeStateIdle;
-    pkt_num = 0;
-    ip[0] = '\0';
-    width = 0;
-    height = 0;
 
     hints->fabric_attr->prov_name = NULL; // Value is statically allocated, so don't want libfabric to free it.
     fi_freeinfo (hints);
@@ -637,9 +440,9 @@ int main(int argc, char **argv)
         return 1;
     }
 
-    char *src = argv[1];
-    char *dst = argv[2];
-    char *port = strchr(dst, ':');
+    src = argv[1];
+    dst = argv[2];
+    port = strchr(dst, ':');
     if (!port) {
         fprintf(stderr, "Invalid port\n");
         return 2;
@@ -660,15 +463,28 @@ int main(int argc, char **argv)
         perror("socket");
         return 4;
     }
+    struct in_addr a_src;
+    if (!inet_aton(src, &a_src)) {
+        fprintf(stderr, "Invalid IP %s\n", src);
+        return 5;
+    }
+
     struct sockaddr_in addr = {
         .sin_family = AF_INET,
-        .sin_port = htons(p),
-        .sin_addr = a_dst,
+        .sin_addr = a_src,
+        .sin_port = htons(CTRL_PORT),
     };
 
+    if (bind(s, (struct sockaddr*)&addr, (socklen_t)sizeof(addr)) < 0) {
+        perror("bind");
+        return 6;
+    }
+
+    addr.sin_port = htons(p);
+    addr.sin_addr = a_dst;
     if (connect(s, (struct sockaddr*)&addr, (socklen_t)sizeof(addr)) < 0) {
         perror("connect");
-        return 5;
+        return 7;
     }
 
     tx_alloc();
@@ -705,7 +521,7 @@ int main(int argc, char **argv)
     strcpy(pkt.senders_ip_str, src);
     pkt.senders_gid_array[0] = '\0';
     strcpy(pkt.senders_stream_name_str, "foobar");
-    pkt.senders_control_dest_port = 1234;
+    pkt.senders_control_dest_port = CTRL_PORT;
     pkt.control_packet_num = 0;
 
     ssize_t ret;
@@ -737,8 +553,44 @@ int main(int argc, char **argv)
         perror("send");
     usleep(10000);
 
+
+    ret = recv(s, &pkt, sizeof(pkt), 0);
+    if (ret < 0) {
+        perror("recv");
+        return 7;
+    }
+
+    int count = 1;
+    uint64_t flags = 0;
+    void* context_ptr = NULL;
+    static fi_addr_t remote_fi_addr;
+
+    int fi_ret = fi_av_insert(av, (void*)&pkt.senders_gid_array, count,
+            &remote_fi_addr, flags, context_ptr);
+    if (count != fi_ret) {
+        // This is a fatal error.
+        fprintf(stderr, "Failed to start Tx connection. fi_av_insert() failed[%d (%s)]\n",
+                fi_ret, fi_strerror(-fi_ret));
+    }
+
+    /* */
+
+    uint64_t n = tx_cq_cntr % 3000;
+    uint8_t *data_pkt = tx_buf + n * UBUF_DEFAULT_SIZE_A;
+    memset(data_pkt, 0, UBUF_DEFAULT_SIZE);
+
+    data_pkt[0] = kPayloadTypeProbe;
+    uint16_t seq = 0, num = 0;
+    uint32_t id = 0;
+    put_16le(&data_pkt[1], seq);
+    put_16le(&data_pkt[3], num);
+    put_32le(&data_pkt[5], id);
+
+    tx();
+
     for (;;) {
-        // data
+        //kPayloadTypeData = 0,   ///< Payload contains application payload data.
+        //x * kPayloadTypeDataOffset, ///< Payload contains application payload data with data offset field in each
         break;
     }
 
