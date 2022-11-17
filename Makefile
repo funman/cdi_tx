@@ -11,4 +11,4 @@ clean:
 	rm -f tx *.o
 
 run: tx
-	LD_LIBRARY_PATH=$(FABRIC)/lib ./tx 192.168.0.221 192.168.0.177:47593
+	FI_LOG_LEVEL=10 LD_LIBRARY_PATH=$(FABRIC)/lib gdb -q --args ./tx 192.168.0.221 192.168.0.177:47593
