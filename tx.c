@@ -73,6 +73,7 @@ static char *src;
 static char *dst;
 static char *port;
 static int fd;
+static int sock;
 
 static int max_msg_size;
 static uint16_t src_port;
@@ -409,67 +410,12 @@ static uint8_t *get_pkt(void)
 {
     uint64_t n = tx_cq_cntr % 3000;
     uint8_t *data_pkt = tx_buf + n * UBUF_DEFAULT_SIZE_A;
-    memset(data_pkt, 0, UBUF_DEFAULT_SIZE);
 
     return data_pkt;
 }
 
-int main(int argc, char **argv)
+static int conn(void)
 {
-    if (argc != 3) {
-        fprintf(stderr, "Usage: %s src dst:port\n", argv[0]);
-        return 1;
-    }
-
-    src = argv[1];
-    dst = argv[2];
-    port = strchr(dst, ':');
-    if (!port) {
-        fprintf(stderr, "Invalid port\n");
-        return 2;
-    }
-
-    *port++ = '\0';
-
-    int p = atoi(port);
-
-    struct in_addr a_dst;
-    if (!inet_aton(dst, &a_dst)) {
-        fprintf(stderr, "Invalid IP %s\n", dst);
-        return 3;
-    }
-
-    int s = socket(AF_INET, SOCK_DGRAM, 0);
-    if (s < 0) {
-        perror("socket");
-        return 4;
-    }
-    struct in_addr a_src;
-    if (!inet_aton(src, &a_src)) {
-        fprintf(stderr, "Invalid IP %s\n", src);
-        return 5;
-    }
-
-    struct sockaddr_in addr = {
-        .sin_family = AF_INET,
-        .sin_addr = a_src,
-        .sin_port = htons(CTRL_PORT),
-    };
-
-    if (bind(s, (struct sockaddr*)&addr, (socklen_t)sizeof(addr)) < 0) {
-        perror("bind");
-        return 6;
-    }
-
-    addr.sin_port = htons(p);
-    addr.sin_addr = a_dst;
-    if (connect(s, (struct sockaddr*)&addr, (socklen_t)sizeof(addr)) < 0) {
-        perror("connect");
-        return 7;
-    }
-
-    tx_alloc();
-
     /*
         -> reset
         <- ack
@@ -500,54 +446,104 @@ int main(int argc, char **argv)
     pkt.v = 2;
     pkt.major = 1;
     pkt.minor = 4;
+
     strcpy(pkt.senders_ip_str, src);
     pkt.senders_gid_array[0] = '\0';
     strcpy(pkt.senders_stream_name_str, "foobar");
     pkt.senders_control_dest_port = CTRL_PORT;
-    pkt.control_packet_num = 0;
 
-    ssize_t ret;
+    ProbeCommand cmd[3] = {
+        kProbeCommandReset, 
+        kProbeCommandProtocolVersion,
+        kProbeCommandPing,
+    };
 
-    pkt.command = kProbeCommandReset;
-    pkt.control_packet_num++;
-    pkt.checksum = 0;
-    pkt.checksum = CalculateChecksum((uint8_t*)&pkt, sizeof(pkt) - 3, (uint8_t*)&pkt.checksum);
+    for (int i = 0; i < 3; i++) {
+        pkt.command = cmd[i];
+        pkt.control_packet_num = i;
+        pkt.checksum = 0;
+        pkt.checksum = CalculateChecksum((uint8_t*)&pkt, sizeof(pkt) - 3, (uint8_t*)&pkt.checksum);
 
-    ret = send(s, &pkt, sizeof(pkt), 0);
-    if (ret < 0)
-        perror("send");
-    usleep(10000);
+        if (send(sock, &pkt, sizeof(pkt), 0) < 0) {
+            perror("send");
+            return 1;
+        }
+        usleep(10000);
+    }
 
-    pkt.command = kProbeCommandProtocolVersion;
-    pkt.checksum = 0;
-    pkt.control_packet_num++;
-    pkt.checksum = CalculateChecksum((uint8_t*)&pkt, sizeof(pkt) - 3, (uint8_t*)&pkt.checksum);
-    ret = send(s, &pkt, sizeof(pkt), 0);
-    if (ret < 0)
-        perror("send");
-    usleep(10000);
-
-    pkt.command = kProbeCommandPing;
-    pkt.checksum = 0;
-    pkt.checksum = CalculateChecksum((uint8_t*)&pkt, sizeof(pkt) - 3, (uint8_t*)&pkt.checksum);
-    ret = send(s, &pkt, sizeof(pkt), 0);
-    if (ret < 0)
-        perror("send");
-    usleep(10000);
-
-
-    ret = recv(s, &pkt, sizeof(pkt), 0);
-    if (ret < 0) {
+    if (recv(sock, &pkt, sizeof(pkt), 0) < 0) {
         perror("recv");
-        return 7;
+        return 1;
     }
 
     int fi_ret = fi_av_insert(av, (void*)&pkt.senders_gid_array, 1,
             &remote_fi_addr, 0, NULL);
     if (1 != fi_ret) {
-        fprintf(stderr, "fi_av_insert: %s]\n", fi_strerror(-fi_ret));
+        fprintf(stderr, "fi_av_insert: %s\n", fi_strerror(-fi_ret));
         return 8;
     }
+
+    return 0;
+}
+
+int main(int argc, char **argv)
+{
+    if (argc != 3) {
+        fprintf(stderr, "Usage: %s src dst:port\n", argv[0]);
+        return 1;
+    }
+
+    src = argv[1];
+    dst = argv[2];
+    port = strchr(dst, ':');
+    if (!port) {
+        fprintf(stderr, "Invalid port\n");
+        return 2;
+    }
+
+    *port++ = '\0';
+
+    int p = atoi(port);
+
+    struct in_addr a_dst;
+    if (!inet_aton(dst, &a_dst)) {
+        fprintf(stderr, "Invalid IP %s\n", dst);
+        return 3;
+    }
+
+    sock = socket(AF_INET, SOCK_DGRAM, 0);
+    if (sock < 0) {
+        perror("socket");
+        return 4;
+    }
+    struct in_addr a_src;
+    if (!inet_aton(src, &a_src)) {
+        fprintf(stderr, "Invalid IP %s\n", src);
+        return 5;
+    }
+
+    struct sockaddr_in addr = {
+        .sin_family = AF_INET,
+        .sin_addr = a_src,
+        .sin_port = htons(CTRL_PORT),
+    };
+
+    if (bind(sock, (struct sockaddr*)&addr, (socklen_t)sizeof(addr)) < 0) {
+        perror("bind");
+        return 6;
+    }
+
+    addr.sin_port = htons(p);
+    addr.sin_addr = a_dst;
+    if (connect(sock, (struct sockaddr*)&addr, (socklen_t)sizeof(addr)) < 0) {
+        perror("connect");
+        return 7;
+    }
+
+    tx_alloc();
+
+    if (conn())
+        return 8;
 
     uint16_t seq = 0;   // seqnum in pic
     uint16_t num = 0;   // pic num
