@@ -177,7 +177,6 @@ static int get_cq_comp(void)
     // FIXME
     if (tx_cq_cntr == 0) {
         tx_cq_cntr++;
-        printf("shortcut\n");
         return 0;
     }
 
@@ -550,7 +549,6 @@ int main(int argc, char **argv)
     uint32_t id = 0;    // pkt num
 
     // PROBE
-    printf("PROBE\n");
     for (int i = 0; i < 10; i++) {
         uint8_t *data_pkt = get_pkt();
 
@@ -565,10 +563,18 @@ int main(int argc, char **argv)
     seq = id = 0;
 
     uint32_t offset = 0;
-    printf("DATA\n");
+
+    static uint8_t pic[1920*1080*5/2]; /* 40 bits per 2 pixels (UYVY) */
+
     for (;;) {
         uint8_t *pkt_buf = get_pkt();
         bool is_offset = seq != 0;
+        if (!is_offset) {
+            if (fread(pic, sizeof(pic), 1, stdin) != 1) {
+                perror("fread");
+                break;
+            }
+        }
 
         size_t s = UBUF_DEFAULT_SIZE;
 
@@ -609,6 +615,11 @@ int main(int argc, char **argv)
             put_32le(pkt_buf, data_size); pkt_buf += 4; s -= 4;
         }
 
+        if (offset + s > sizeof(pic))
+            s = sizeof(pic) - offset;
+
+        memcpy(pkt_buf, &pic[offset], s);
+
         offset += s;
 
         tx();
@@ -617,6 +628,8 @@ int main(int argc, char **argv)
             num++;
             seq = 0;
             offset = 0;
+            printf(".");
+            fflush(stdout);
         }
     }
 
