@@ -147,6 +147,12 @@ static const char *get_cmd(ProbeCommand cmd)
     return foo[cmd];
 }
 
+static void put_64le(uint8_t *buf, const uint64_t val)
+{
+    for (int i = 0; i < 8; i++)
+        buf[i] = (val >> 8*i) & 0xff;
+}
+
 static void put_32le(uint8_t *buf, const uint32_t val)
 {
     for (int i = 0; i < 4; i++)
@@ -205,32 +211,40 @@ static const char *get_pt(int pt)
     return foo[pt];
 }
 
-static int get_cq_comp(struct fid_cq *cq, uint64_t *cur, uint64_t total)
+static int get_cq_comp(void)
 {
     struct fi_cq_data_entry comp;
 
-    int z = 0;
-    do {
-        int ret = fi_cq_read (cq, &comp, 1);
+    if (tx_cq_cntr == 0) {
+        tx_cq_cntr++;
+        printf("shortcut\n");
+        return 0;
+    }
+
+    int x = 0;
+    for (;;) {
+        int ret = fi_cq_read (txcq, &comp, 1);
         if (ret > 0) {
-            if (ret != 1)
+//            printf("OK cntr %d\n", tx_cq_cntr);
+            if (ret != 1) {
                 printf("cq_read %d\n", ret);
-            (*cur)++;
+                abort();
+            }
+            tx_cq_cntr++;
+            return 0;
         } else if (ret == -FI_EAGAIN) {
-            if (z++ > 10)
-                return 1;
-            continue;
+        //    printf("again\n");
         } else if (ret == -FI_EAVAIL) {
-            (*cur)++;
+            tx_cq_cntr++;
             struct fi_cq_err_entry cq_err = { 0 };
 
-            int ret = fi_cq_readerr (cq, &cq_err, 0);
+            int ret = fi_cq_readerr (txcq, &cq_err, 0);
             if (ret < 0) {
                 fprintf(stderr, "%s(): ret=%d (%s)\n", "fi_cq_readerr", ret, fi_strerror(-ret));
                 return ret;
             }
 
-            fprintf(stderr, "X %s\n", fi_cq_strerror (cq, cq_err.prov_errno,
+            fprintf(stderr, "X %s\n", fi_cq_strerror (txcq, cq_err.prov_errno,
                         cq_err.err_data, NULL, 0));
             exit(1);
             return -cq_err.err;
@@ -238,23 +252,28 @@ static int get_cq_comp(struct fid_cq *cq, uint64_t *cur, uint64_t total)
             fprintf(stderr, "%s(): ret=%d (%s)\n", "get_cq_comp", ret, fi_strerror(-ret));
             return ret;
         }
-    } while (total - *cur > 0);
+    }
 
     return 0;
 }
 
 static ssize_t tx(void)
 {
-    if (get_cq_comp (txcq, &tx_cq_cntr, tx_seq))
-        return -1;
+    for (;;) {
+        if (get_cq_comp()) {
+            printf("fuck\n");
+        } else 
+            break;
+    }
 
     uint64_t n = tx_cq_cntr % 3000;
+
+//    printf("send %" PRIu64 "\n", n);
 
     struct iovec msg_iov = {
         .iov_base = (uint8_t*)tx_buf + n * UBUF_DEFAULT_SIZE_A,
         .iov_len = UBUF_DEFAULT_SIZE,
     };
-//    struct fi_context ctx[2];
 
     struct fi_msg msg = {
         .msg_iov = &msg_iov,
@@ -265,13 +284,24 @@ static ssize_t tx(void)
         .data = 0,
     };
 
-    printf(".\n");
-    ssize_t s = fi_sendmsg(ep, &msg, FI_TRANSMIT_COMPLETE);
+    const int max_num_tries = 5;
+    int num_tries = 0;
+    ssize_t s;
+
+    do {
+        s = fi_sendmsg(ep, &msg, 0/*FI_MORE*/);
+        if (0 == s || -FI_EAGAIN != s)
+            break;
+    } while (++num_tries < max_num_tries);
+
     if (!s)
         tx_seq++;
     else {
         fprintf(stderr, "fi_sendmsg\n");
+        abort();
     }
+
+//    usleep(10000);
 
     return msg_iov.iov_len;
 }
@@ -433,6 +463,15 @@ static void tx_alloc(void)
     fi_freeinfo (hints);
 }
 
+static uint8_t *get_pkt(void)
+{
+    uint64_t n = tx_cq_cntr % 3000;
+    uint8_t *data_pkt = tx_buf + n * UBUF_DEFAULT_SIZE_A;
+    memset(data_pkt, 0, UBUF_DEFAULT_SIZE);
+
+    return data_pkt;
+}
+
 int main(int argc, char **argv)
 {
     if (argc != 3) {
@@ -489,8 +528,6 @@ int main(int argc, char **argv)
 
     tx_alloc();
 
-    printf("GO\n");
-
     /*
         -> reset
         <- ack
@@ -515,6 +552,9 @@ int main(int argc, char **argv)
         uint16_t checksum;
         bool requires_ack; 
     } pkt;
+
+    memset(&pkt, 0, sizeof(pkt));
+
     pkt.v = 2;
     pkt.major = 1;
     pkt.minor = 4;
@@ -560,38 +600,103 @@ int main(int argc, char **argv)
         return 7;
     }
 
-    int count = 1;
-    uint64_t flags = 0;
-    void* context_ptr = NULL;
     static fi_addr_t remote_fi_addr;
 
-    int fi_ret = fi_av_insert(av, (void*)&pkt.senders_gid_array, count,
-            &remote_fi_addr, flags, context_ptr);
-    if (count != fi_ret) {
-        // This is a fatal error.
-        fprintf(stderr, "Failed to start Tx connection. fi_av_insert() failed[%d (%s)]\n",
-                fi_ret, fi_strerror(-fi_ret));
+    int fi_ret = fi_av_insert(av, (void*)&pkt.senders_gid_array, 1,
+            &remote_fi_addr, 0, NULL);
+    if (1 != fi_ret) {
+        fprintf(stderr, "fi_av_insert: %s]\n", fi_strerror(-fi_ret));
+        return 8;
     }
 
-    /* */
+//   debug: [fisrc] PT Probe(2) - seq 9 num 0 id 9
+//   debug: [fisrc] PT Data(0) - seq 0 num 0 id 0
 
-    uint64_t n = tx_cq_cntr % 3000;
-    uint8_t *data_pkt = tx_buf + n * UBUF_DEFAULT_SIZE_A;
-    memset(data_pkt, 0, UBUF_DEFAULT_SIZE);
+//   debug: [fisrc] PT DataOffset(1) - seq 1 num 0 id 1
 
-    data_pkt[0] = kPayloadTypeProbe;
-    uint16_t seq = 0, num = 0;
-    uint32_t id = 0;
-    put_16le(&data_pkt[1], seq);
-    put_16le(&data_pkt[3], num);
-    put_32le(&data_pkt[5], id);
+//  debug: [fisrc] PT DataOffset(1) - seq 579 num 9 id 5799
+//  debug: [fisrc] PT Data(0) - seq 0 num 10 id 5800
 
-    tx();
+    uint16_t seq = 0;   // seqnum in pic
+    uint16_t num = 0;   // pic num
+    uint32_t id = 0;    // pkt num
 
+    // PROBE
+    printf("PROBE\n");
+    for (int i = 0; i < 10; i++) {
+        uint8_t *data_pkt = get_pkt();
+
+        data_pkt[0] = kPayloadTypeProbe;
+        put_16le(&data_pkt[1], seq++);
+        put_16le(&data_pkt[3], num);
+        put_32le(&data_pkt[5], id++);
+
+        while (tx() < 0)
+            ;
+    }
+
+    seq = id = 0;
+
+    uint32_t offset = 0;
+    printf("DATA\n");
     for (;;) {
-        //kPayloadTypeData = 0,   ///< Payload contains application payload data.
-        //x * kPayloadTypeDataOffset, ///< Payload contains application payload data with data offset field in each
-        break;
+        uint8_t *pkt_buf = get_pkt();
+        bool is_offset = seq != 0;
+
+        size_t s = UBUF_DEFAULT_SIZE;
+
+        *pkt_buf++ = is_offset ? kPayloadTypeDataOffset : kPayloadTypeData; s--;
+        put_16le(pkt_buf, seq++); pkt_buf += 2; s -= 2;
+        put_16le(pkt_buf, num); pkt_buf += 2; s -= 2;
+        put_32le(pkt_buf, id++); pkt_buf += 4; s -= 4;
+
+        if (is_offset) {
+            put_32le(pkt_buf, offset); pkt_buf += 4; s -= 4;
+        } else {
+            uint32_t total_payload_size = 5184000;
+            uint64_t max_latency_usec = 16666;
+            uint32_t sec = 0;
+            uint32_t nsec = 0;
+            uint64_t payload_user_data = 0;
+            uint64_t tx_start_time_usec = 0;
+            uint16_t extra_data_size = 1290;
+
+            put_32le(pkt_buf, total_payload_size); pkt_buf += 4; s -= 4;
+            put_64le(pkt_buf, max_latency_usec); pkt_buf += 8; s -= 8;
+            put_32le(pkt_buf, sec); pkt_buf += 4; s -= 4;
+            put_32le(pkt_buf, nsec); pkt_buf += 4; s -= 4;
+            put_64le(pkt_buf, payload_user_data); pkt_buf += 8; s -= 8;
+            put_16le(pkt_buf, extra_data_size); pkt_buf += 2; s -= 2;
+            put_64le(pkt_buf, tx_start_time_usec); pkt_buf += 8; s -= 8;
+
+            assert(s >= extra_data_size);
+            assert(extra_data_size == 2 + 257 + 1024 + 3 + 4);
+
+            uint16_t stream_id = 0;
+            put_16le(pkt_buf, stream_id); pkt_buf += 2; s -= 2;
+            snprintf(pkt_buf, 257, "https://cdi.elemental.com/specs/baseline-video");
+            pkt_buf += 257; s -= 257;       // uri
+            uint32_t data_size = snprintf(pkt_buf, 1024, "cdi_profile_version=01.00; sampling=YCbCr422; depth=10; width=1920; height=1080; exactframerate=10; colorimetry=BT709; RANGE=Full;");
+            pkt_buf += 1024; s -= 1024;     // data
+            pkt_buf += 3; s -= 3;           // packing
+            put_32le(pkt_buf, data_size); pkt_buf += 4; s -= 4;
+
+            //
+            // debug: [fisrc] total payload size 5184000 max latency usecs 16666 PTP 1668682781.940585216 userdata 0 extradata 1290 tx_start_time_usec 2051403199
+        }
+
+        // data
+        offset += s;
+//        printf("offset %u id %d\n", offset, id);
+
+        while (tx() < 0)
+            ;
+
+        if (seq == 580) { // FIXME
+            num++;
+            seq = 0;
+            offset = 0;
+        }
     }
 
 end:
