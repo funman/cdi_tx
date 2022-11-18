@@ -45,26 +45,17 @@
 
 #include <rdma/fi_cm.h>
 
-/** default size of buffers when unspecified */
 #define UBUF_DEFAULT_SIZE      8961
 #define UBUF_DEFAULT_SIZE_A    8968
 
 #define FI_DEFAULT_PORT 47592
 #define CTRL_PORT 1234
 
-
 #define MAX_IP_STRING_LENGTH                (64)
-
-/// @brief Maximum EFA device GID length. Contains GID + QPN (see efa_ep_addr).
 #define MAX_IPV6_GID_LENGTH                 (32)
-
-/// @brief Maximum IPV6 address string length.
 #define MAX_IPV6_ADDRESS_STRING_LENGTH      (64)
 
-/// @brief Maximum connection name string length.
 #define CDI_MAX_CONNECTION_NAME_STRING_LENGTH           (128)
-
-/// @brief Maximum stream name string length.
 #define CDI_MAX_STREAM_NAME_STRING_LENGTH               (CDI_MAX_CONNECTION_NAME_STRING_LENGTH+10)
 
 #define unlikely(x)     __builtin_expect(!!(x),0)
@@ -73,7 +64,7 @@
 do {                    \
     int ret = cmd;      \
     if (unlikely(ret)) {\
-        printf("%s():%d : ret=%d\n", __func__, __LINE__, ret); \
+        fprintf(stderr, "%s():%d : ret=%d\n", __func__, __LINE__, ret); \
     }                   \
 } while (0)
 
@@ -81,10 +72,8 @@ do {                    \
 static char *src;
 static char *dst;
 static char *port;
-/** udp socket descriptor */
 static int fd;
 
-////
 static int max_msg_size;
 static uint16_t src_port;
 static uint16_t dst_port;
@@ -130,22 +119,6 @@ typedef enum {
     kProbeCommandAck,       ///< Packet is an ACK response to a previously sent command.
     kProbeCommandProtocolVersion, ///< Packet contains protocol version of sender.
 } ProbeCommand;
-
-static const char *get_cmd(ProbeCommand cmd)
-{
-    static const char *foo[] = {
-        [kProbeCommandReset] = "Reset",
-        [kProbeCommandPing] = "Ping",
-        [kProbeCommandConnected] = "Connected",
-        [kProbeCommandAck] = "Ack",
-        [kProbeCommandProtocolVersion] = "ProtocolVersion",
-    };
-
-    if (cmd < kProbeCommandReset || cmd > kProbeCommandProtocolVersion)
-        return "?";
-
-    return foo[cmd];
-}
 
 static void put_64le(uint8_t *buf, const uint64_t val)
 {
@@ -196,49 +169,36 @@ typedef enum {
                             ///  callbacks).
 } CdiPayloadType;
 
-static const char *get_pt(int pt)
-{
-    static const char *foo[] = {
-        [kPayloadTypeData] = "Data",
-        [kPayloadTypeDataOffset] = "DataOffset",
-        [kPayloadTypeProbe] = "Probe",
-        [kPayloadTypeKeepAlive] = "KeepAlive",
-    };
-
-    if (pt < kPayloadTypeData || pt > kPayloadTypeKeepAlive)
-        return "?";
-
-    return foo[pt];
-}
-
 static int get_cq_comp(void)
 {
     struct fi_cq_data_entry comp;
 
+    // FIXME
     if (tx_cq_cntr == 0) {
         tx_cq_cntr++;
         printf("shortcut\n");
         return 0;
     }
 
-    int x = 0;
     for (;;) {
         int ret = fi_cq_read (txcq, &comp, 1);
         if (ret > 0) {
-//            printf("OK cntr %d\n", tx_cq_cntr);
             if (ret != 1) {
                 printf("cq_read %d\n", ret);
                 abort();
             }
             tx_cq_cntr++;
-            return 0;
-        } else if (ret == -FI_EAGAIN) {
-        //    printf("again\n");
-        } else if (ret == -FI_EAVAIL) {
+            break;
+        }
+
+        switch (ret) {
+        case -FI_EAGAIN: continue;
+        case 0: continue;
+        case -FI_EAVAIL:
             tx_cq_cntr++;
             struct fi_cq_err_entry cq_err = { 0 };
 
-            int ret = fi_cq_readerr (txcq, &cq_err, 0);
+            ret = fi_cq_readerr (txcq, &cq_err, 0);
             if (ret < 0) {
                 fprintf(stderr, "%s(): ret=%d (%s)\n", "fi_cq_readerr", ret, fi_strerror(-ret));
                 return ret;
@@ -248,7 +208,7 @@ static int get_cq_comp(void)
                         cq_err.err_data, NULL, 0));
             exit(1);
             return -cq_err.err;
-        } else if (ret < 0) {
+        default:
             fprintf(stderr, "%s(): ret=%d (%s)\n", "get_cq_comp", ret, fi_strerror(-ret));
             return ret;
         }
@@ -257,18 +217,12 @@ static int get_cq_comp(void)
     return 0;
 }
 
-static ssize_t tx(void)
+static void tx(void)
 {
-    for (;;) {
-        if (get_cq_comp()) {
-            printf("fuck\n");
-        } else 
-            break;
-    }
+    while (get_cq_comp())
+        ;
 
     uint64_t n = tx_cq_cntr % 3000;
-
-//    printf("send %" PRIu64 "\n", n);
 
     struct iovec msg_iov = {
         .iov_base = (uint8_t*)tx_buf + n * UBUF_DEFAULT_SIZE_A,
@@ -280,30 +234,18 @@ static ssize_t tx(void)
         .desc = fi_mr_desc (mr),
         .iov_count = 1,
         .addr = 0,
-        .context = NULL, //ctx,
+        .context = NULL,
         .data = 0,
     };
 
-    const int max_num_tries = 5;
-    int num_tries = 0;
-    ssize_t s;
+    ssize_t s = fi_sendmsg(ep, &msg, 0);
 
-    do {
-        s = fi_sendmsg(ep, &msg, 0/*FI_MORE*/);
-        if (0 == s || -FI_EAGAIN != s)
-            break;
-    } while (++num_tries < max_num_tries);
-
-    if (!s)
-        tx_seq++;
-    else {
+    if (s) {
         fprintf(stderr, "fi_sendmsg\n");
         abort();
     }
 
-//    usleep(10000);
-
-    return msg_iov.iov_len;
+    tx_seq++;
 }
 
 static uint16_t CalculateChecksum(const uint8_t *buf, int size, const uint8_t *csum_pos)
@@ -600,22 +542,12 @@ int main(int argc, char **argv)
         return 7;
     }
 
-    static fi_addr_t remote_fi_addr;
-
     int fi_ret = fi_av_insert(av, (void*)&pkt.senders_gid_array, 1,
             &remote_fi_addr, 0, NULL);
     if (1 != fi_ret) {
         fprintf(stderr, "fi_av_insert: %s]\n", fi_strerror(-fi_ret));
         return 8;
     }
-
-//   debug: [fisrc] PT Probe(2) - seq 9 num 0 id 9
-//   debug: [fisrc] PT Data(0) - seq 0 num 0 id 0
-
-//   debug: [fisrc] PT DataOffset(1) - seq 1 num 0 id 1
-
-//  debug: [fisrc] PT DataOffset(1) - seq 579 num 9 id 5799
-//  debug: [fisrc] PT Data(0) - seq 0 num 10 id 5800
 
     uint16_t seq = 0;   // seqnum in pic
     uint16_t num = 0;   // pic num
@@ -631,8 +563,7 @@ int main(int argc, char **argv)
         put_16le(&data_pkt[3], num);
         put_32le(&data_pkt[5], id++);
 
-        while (tx() < 0)
-            ;
+        tx();
     }
 
     seq = id = 0;
@@ -680,17 +611,11 @@ int main(int argc, char **argv)
             pkt_buf += 1024; s -= 1024;     // data
             pkt_buf += 3; s -= 3;           // packing
             put_32le(pkt_buf, data_size); pkt_buf += 4; s -= 4;
-
-            //
-            // debug: [fisrc] total payload size 5184000 max latency usecs 16666 PTP 1668682781.940585216 userdata 0 extradata 1290 tx_start_time_usec 2051403199
         }
 
-        // data
         offset += s;
-//        printf("offset %u id %d\n", offset, id);
 
-        while (tx() < 0)
-            ;
+        tx();
 
         if (seq == 580) { // FIXME
             num++;
