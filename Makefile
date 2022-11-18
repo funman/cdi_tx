@@ -11,4 +11,4 @@ clean:
 	rm -f tx *.o
 
 run: tx
-	FI_LOG_LEVEL=10 LD_LIBRARY_PATH=$(FABRIC)/lib ./tx 192.168.0.221 192.168.0.177:47593
+	(while :;do cat f;done)|FI_LOG_LEVEL=10 LD_LIBRARY_PATH=$(FABRIC)/lib ./tx 192.168.0.221 192.168.0.177:47593
