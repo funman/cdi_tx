@@ -364,7 +364,9 @@ static void tx_alloc(void)
     hints->domain_attr->mr_mode =
         FI_MR_LOCAL | FI_MR_ALLOCATED | /*FI_MR_PROV_KEY | */FI_MR_VIRT_ADDR;
 
-    hints->fabric_attr->prov_name = (char*)"sockets";
+    bool efa = false;
+
+    hints->fabric_attr->prov_name = efa ? (char*)"efa" : (char*)"sockets";
     hints->ep_attr->type = FI_EP_RDM;
     hints->domain_attr->resource_mgmt = FI_RM_ENABLED;
     hints->domain_attr->threading = FI_THREAD_DOMAIN;
@@ -374,7 +376,8 @@ static void tx_alloc(void)
     char service[12];
     snprintf(service, sizeof(service), "%d", atoi(port) + 1);
     RET(fi_getinfo (FI_VERSION (FI_MAJOR_VERSION, FI_MINOR_VERSION),
-            node, service, 0/* ? */, hints, &fi));
+                efa ? NULL : node, efa ? NULL : service,
+                0/* ? */, hints, &fi));
 
     RET(fi_fabric (fi->fabric_attr, &fabric, NULL));
     RET(fi_domain (fabric, fi, &domain, NULL));
