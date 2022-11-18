@@ -624,7 +624,7 @@ int main(int argc, char **argv)
 
         tx();
 
-        if (seq == 580) { // FIXME
+        if (seq == 580) { // (1920*1080*5/2+1290+36)/(8961-9-4) == 579.495529 pkts per frame
             num++;
             seq = 0;
             offset = 0;
