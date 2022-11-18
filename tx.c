@@ -90,7 +90,9 @@ static struct fid_cq *txcq;
 static struct fid_mr *mr;
 static struct fid_av *av;
 
-static uint64_t tx_seq, tx_cq_cntr;
+static uint64_t tx_seq;
+static uint64_t rx_idx; // currently written to
+static uint64_t tx_idx; // actually transmitted
 
 static void *buf, *tx_buf;
 static size_t x_size;
@@ -170,82 +172,89 @@ typedef enum {
                             ///  callbacks).
 } CdiPayloadType;
 
-static int get_cq_comp(void)
+static uint64_t now(void)
 {
-    struct fi_cq_data_entry comp;
+    struct timespec ts;
 
-    // FIXME
-    if (tx_cq_cntr == 0) {
-        tx_cq_cntr++;
+    if (clock_gettime(CLOCK_MONOTONIC, &ts) < 0) {
+        perror("clock_gettime");
         return 0;
     }
 
-    for (;;) {
-        int ret = fi_cq_read (txcq, &comp, 1);
-        if (ret > 0) {
-            if (ret != 1) {
-                printf("cq_read %d\n", ret);
-                abort();
-            }
-            tx_cq_cntr++;
-            break;
-        }
+    return (uint64_t)ts.tv_sec * UINT64_C(1000000000) + (uint64_t)ts.tv_nsec;
+}
 
-        switch (ret) {
-        case -FI_EAGAIN: continue;
-        case 0: continue;
+static int get_cq_comp(void)
+{
+    struct fi_cq_data_entry comp[50];
+
+    int ret = fi_cq_read (txcq, comp, sizeof(comp) / sizeof(*comp));
+    if (ret > 0) {
+        tx_idx += ret;
+    } else switch (ret) {
+        case -FI_EAGAIN: break;
+        case 0: break;
         case -FI_EAVAIL:
-            tx_cq_cntr++;
-            struct fi_cq_err_entry cq_err = { 0 };
+                tx_idx++;
+                struct fi_cq_err_entry cq_err = { 0 };
 
-            ret = fi_cq_readerr (txcq, &cq_err, 0);
-            if (ret < 0) {
-                fprintf(stderr, "%s(): ret=%d (%s)\n", "fi_cq_readerr", ret, fi_strerror(-ret));
-                return ret;
-            }
+                ret = fi_cq_readerr (txcq, &cq_err, 0);
+                if (ret < 0) {
+                    fprintf(stderr, "%s(): ret=%d (%s)\n", "fi_cq_readerr", ret, fi_strerror(-ret));
+                    return ret;
+                }
 
-            fprintf(stderr, "X %s\n", fi_cq_strerror (txcq, cq_err.prov_errno,
-                        cq_err.err_data, NULL, 0));
-            exit(1);
-            return -cq_err.err;
+                fprintf(stderr, "X %s\n", fi_cq_strerror (txcq, cq_err.prov_errno,
+                            cq_err.err_data, NULL, 0));
+                exit(1);
+                return -cq_err.err;
         default:
-            fprintf(stderr, "%s(): ret=%d (%s)\n", "get_cq_comp", ret, fi_strerror(-ret));
-            return ret;
-        }
+                fprintf(stderr, "%s(): ret=%d (%s)\n", "get_cq_comp", ret, fi_strerror(-ret));
+                exit(1);
+                return ret;
+    }
+
+end:
+    static uint64_t last;
+    uint64_t t = now();
+    if (t - last > 1000000000) {
+        printf("busy %" PRId64 "\n", rx_idx - tx_idx);
+        last = t;
     }
 
     return 0;
 }
 
-static void tx(void)
+static void tx(int n)
 {
-    uint64_t n = tx_cq_cntr % 3000;
+    uint64_t idx = rx_idx;
+    rx_idx += n;
 
-    while (get_cq_comp())
-        ;
+    for (int i = 0; i < n; i++) {
+        idx %= 3000;
+        struct iovec msg_iov = {
+            .iov_base = (uint8_t*)tx_buf + idx++ * UBUF_DEFAULT_SIZE_A,
+            .iov_len = UBUF_DEFAULT_SIZE,
+        };
 
-    struct iovec msg_iov = {
-        .iov_base = (uint8_t*)tx_buf + n * UBUF_DEFAULT_SIZE_A,
-        .iov_len = UBUF_DEFAULT_SIZE,
-    };
+        struct fi_msg msg = {
+            .msg_iov = &msg_iov,
+            .desc = fi_mr_desc (mr),
+            .iov_count = 1,
+            .addr = 0,
+            .context = NULL,
+            .data = 0,
+        };
 
-    struct fi_msg msg = {
-        .msg_iov = &msg_iov,
-        .desc = fi_mr_desc (mr),
-        .iov_count = 1,
-        .addr = 0,
-        .context = NULL,
-        .data = 0,
-    };
+        ssize_t s = fi_sendmsg(ep, &msg, (i == n - 1) ? 0 : FI_MORE);
 
-    ssize_t s = fi_sendmsg(ep, &msg, 0);
+        if (s) {
+            fprintf(stderr, "fi_sendmsg\n");
+            abort();
+        }
 
-    if (s) {
-        fprintf(stderr, "fi_sendmsg\n");
-        abort();
+        tx_seq++;
     }
-
-    tx_seq++;
 }
 
 static uint16_t CalculateChecksum(const uint8_t *buf, int size, const uint8_t *csum_pos)
@@ -344,7 +353,8 @@ static void tx_free(void)
 static void tx_alloc(void)
 {
     tx_seq = 0;
-    tx_cq_cntr = 0;
+    rx_idx = 0;
+    tx_idx = 0;
     output_uref = NULL;
 
     max_msg_size = 0;
@@ -410,10 +420,6 @@ static void tx_alloc(void)
 
 static uint8_t *get_pkt(void)
 {
-    uint64_t n = tx_cq_cntr % 3000;
-    uint8_t *data_pkt = tx_buf + n * UBUF_DEFAULT_SIZE_A;
-
-    return data_pkt;
 }
 
 static int conn(void)
@@ -552,16 +558,16 @@ int main(int argc, char **argv)
     uint32_t id = 0;    // pkt num
 
     // PROBE
-    for (int i = 0; i < 10; i++) {
-        uint8_t *data_pkt = get_pkt();
 
+    for (int i = 0; i < 10; i++) { // don't check buffer, we have room for 10 packets
+        uint8_t *data_pkt = tx_buf + (i % 3000) * UBUF_DEFAULT_SIZE_A;
         data_pkt[0] = kPayloadTypeProbe;
         put_16le(&data_pkt[1], seq++);
         put_16le(&data_pkt[3], num);
         put_32le(&data_pkt[5], id++);
-
-        tx();
     }
+
+    tx(10);
 
     seq = id = 0;
 
@@ -570,62 +576,78 @@ int main(int argc, char **argv)
     static uint8_t pic[1920*1080*5/2]; /* 40 bits per 2 pixels (UYVY) */
 
     for (;;) {
-        uint8_t *pkt_buf = get_pkt();
-        bool is_offset = seq != 0;
-        if (!is_offset) {
-            if (fread(pic, sizeof(pic), 1, stdin) != 1) {
-                perror("fread");
-                break;
+        if (get_cq_comp())
+            fprintf(stderr, "get_cq_comp failed\n");
+
+        int avail = 3000 - (rx_idx - tx_idx);
+        if (avail == 0) {
+            usleep(10000);
+            continue;
+        }
+
+        if (avail > 580 - seq)
+            avail = 580 - seq;
+
+//        printf("avail %d\n", avail);
+
+        for (int i = 0; i < avail; i++) {
+            uint8_t *pkt_buf = tx_buf + ((rx_idx + i) % 3000) * UBUF_DEFAULT_SIZE_A;
+            bool is_offset = seq != 0;
+            if (!is_offset) {
+                if (fread(pic, sizeof(pic), 1, stdin) != 1) {
+                    perror("fread");
+                    break;
+                }
             }
+
+            size_t s = UBUF_DEFAULT_SIZE;
+
+            *pkt_buf++ = is_offset ? kPayloadTypeDataOffset : kPayloadTypeData; s--;
+            put_16le(pkt_buf, seq++); pkt_buf += 2; s -= 2;
+            put_16le(pkt_buf, num); pkt_buf += 2; s -= 2;
+            put_32le(pkt_buf, id++); pkt_buf += 4; s -= 4;
+
+            if (is_offset) {
+                put_32le(pkt_buf, offset); pkt_buf += 4; s -= 4;
+            } else {
+                uint32_t total_payload_size = 5184000;
+                uint64_t max_latency_usec = 16666;
+                uint32_t sec = 0;
+                uint32_t nsec = 0;
+                uint64_t payload_user_data = 0;
+                uint64_t tx_start_time_usec = 0;
+                uint16_t extra_data_size = 1290;
+
+                put_32le(pkt_buf, total_payload_size); pkt_buf += 4; s -= 4;
+                put_64le(pkt_buf, max_latency_usec); pkt_buf += 8; s -= 8;
+                put_32le(pkt_buf, sec); pkt_buf += 4; s -= 4;
+                put_32le(pkt_buf, nsec); pkt_buf += 4; s -= 4;
+                put_64le(pkt_buf, payload_user_data); pkt_buf += 8; s -= 8;
+                put_16le(pkt_buf, extra_data_size); pkt_buf += 2; s -= 2;
+                put_64le(pkt_buf, tx_start_time_usec); pkt_buf += 8; s -= 8;
+
+                assert(s >= extra_data_size);
+                assert(extra_data_size == 2 + 257 + 1024 + 3 + 4);
+
+                uint16_t stream_id = 0;
+                put_16le(pkt_buf, stream_id); pkt_buf += 2; s -= 2;
+                snprintf(pkt_buf, 257, "https://cdi.elemental.com/specs/baseline-video");
+                pkt_buf += 257; s -= 257;       // uri
+                uint32_t data_size = snprintf(pkt_buf, 1024, "cdi_profile_version=01.00; sampling=YCbCr422; depth=10; width=1920; height=1080; exactframerate=25; colorimetry=BT709; RANGE=Full;");
+                pkt_buf += 1024; s -= 1024;     // data
+                pkt_buf += 3; s -= 3;           // packing
+                put_32le(pkt_buf, data_size); pkt_buf += 4; s -= 4;
+            }
+
+            if (offset + s > sizeof(pic))
+                s = sizeof(pic) - offset;
+
+            memcpy(pkt_buf, &pic[offset], s);
+
+            offset += s;
         }
 
-        size_t s = UBUF_DEFAULT_SIZE;
-
-        *pkt_buf++ = is_offset ? kPayloadTypeDataOffset : kPayloadTypeData; s--;
-        put_16le(pkt_buf, seq++); pkt_buf += 2; s -= 2;
-        put_16le(pkt_buf, num); pkt_buf += 2; s -= 2;
-        put_32le(pkt_buf, id++); pkt_buf += 4; s -= 4;
-
-        if (is_offset) {
-            put_32le(pkt_buf, offset); pkt_buf += 4; s -= 4;
-        } else {
-            uint32_t total_payload_size = 5184000;
-            uint64_t max_latency_usec = 16666;
-            uint32_t sec = 0;
-            uint32_t nsec = 0;
-            uint64_t payload_user_data = 0;
-            uint64_t tx_start_time_usec = 0;
-            uint16_t extra_data_size = 1290;
-
-            put_32le(pkt_buf, total_payload_size); pkt_buf += 4; s -= 4;
-            put_64le(pkt_buf, max_latency_usec); pkt_buf += 8; s -= 8;
-            put_32le(pkt_buf, sec); pkt_buf += 4; s -= 4;
-            put_32le(pkt_buf, nsec); pkt_buf += 4; s -= 4;
-            put_64le(pkt_buf, payload_user_data); pkt_buf += 8; s -= 8;
-            put_16le(pkt_buf, extra_data_size); pkt_buf += 2; s -= 2;
-            put_64le(pkt_buf, tx_start_time_usec); pkt_buf += 8; s -= 8;
-
-            assert(s >= extra_data_size);
-            assert(extra_data_size == 2 + 257 + 1024 + 3 + 4);
-
-            uint16_t stream_id = 0;
-            put_16le(pkt_buf, stream_id); pkt_buf += 2; s -= 2;
-            snprintf(pkt_buf, 257, "https://cdi.elemental.com/specs/baseline-video");
-            pkt_buf += 257; s -= 257;       // uri
-            uint32_t data_size = snprintf(pkt_buf, 1024, "cdi_profile_version=01.00; sampling=YCbCr422; depth=10; width=1920; height=1080; exactframerate=25; colorimetry=BT709; RANGE=Full;");
-            pkt_buf += 1024; s -= 1024;     // data
-            pkt_buf += 3; s -= 3;           // packing
-            put_32le(pkt_buf, data_size); pkt_buf += 4; s -= 4;
-        }
-
-        if (offset + s > sizeof(pic))
-            s = sizeof(pic) - offset;
-
-        memcpy(pkt_buf, &pic[offset], s);
-
-        offset += s;
-
-        tx();
+        tx(avail);
 
         if (seq == 580) { // (1920*1080*5/2+1290+36)/(8961-9-4) == 579.495529 pkts per frame
             num++;
