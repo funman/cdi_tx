@@ -219,10 +219,10 @@ static int get_cq_comp(void)
 
 static void tx(void)
 {
+    uint64_t n = tx_cq_cntr % 3000;
+
     while (get_cq_comp())
         ;
-
-    uint64_t n = tx_cq_cntr % 3000;
 
     struct iovec msg_iov = {
         .iov_base = (uint8_t*)tx_buf + n * UBUF_DEFAULT_SIZE_A,
