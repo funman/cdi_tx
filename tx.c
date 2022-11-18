@@ -609,7 +609,7 @@ int main(int argc, char **argv)
             put_16le(pkt_buf, stream_id); pkt_buf += 2; s -= 2;
             snprintf(pkt_buf, 257, "https://cdi.elemental.com/specs/baseline-video");
             pkt_buf += 257; s -= 257;       // uri
-            uint32_t data_size = snprintf(pkt_buf, 1024, "cdi_profile_version=01.00; sampling=YCbCr422; depth=10; width=1920; height=1080; exactframerate=10; colorimetry=BT709; RANGE=Full;");
+            uint32_t data_size = snprintf(pkt_buf, 1024, "cdi_profile_version=01.00; sampling=YCbCr422; depth=10; width=1920; height=1080; exactframerate=25; colorimetry=BT709; RANGE=Full;");
             pkt_buf += 1024; s -= 1024;     // data
             pkt_buf += 3; s -= 3;           // packing
             put_32le(pkt_buf, data_size); pkt_buf += 4; s -= 4;
