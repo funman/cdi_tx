@@ -13,4 +13,6 @@ clean:
 	rm -f tx unconv *.o
 
 run: tx
-	(while :;do cat f;done)|FI_LOG_LEVEL=10 LD_LIBRARY_PATH=$(FABRIC)/lib ./tx 192.168.0.221 192.168.0.177:47593
+	LD_LIBRARY_PATH=$(FABRIC)/lib ./run.sh
+
+.PHONY: clean run
