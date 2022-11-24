@@ -90,7 +90,6 @@ static struct fid_cq *txcq;
 static struct fid_mr *mr;
 static struct fid_av *av;
 
-static uint64_t tx_seq;
 static uint64_t rx_idx; // currently written to
 static uint64_t tx_idx; // actually transmitted
 
@@ -191,11 +190,12 @@ static int get_cq_comp(void)
     int ret = fi_cq_read (txcq, comp, sizeof(comp) / sizeof(*comp));
     if (ret > 0) {
         tx_idx += ret;
+        printf("%d ", ret);
+        fflush(stdout);
     } else switch (ret) {
         case -FI_EAGAIN: break;
         case 0: break;
         case -FI_EAVAIL:
-                tx_idx++;
                 struct fi_cq_err_entry cq_err = { 0 };
 
                 ret = fi_cq_readerr (txcq, &cq_err, 0);
@@ -206,7 +206,6 @@ static int get_cq_comp(void)
 
                 fprintf(stderr, "X %s\n", fi_cq_strerror (txcq, cq_err.prov_errno,
                             cq_err.err_data, NULL, 0));
-                exit(1);
                 return -cq_err.err;
         default:
                 fprintf(stderr, "%s(): ret=%d (%s)\n", "get_cq_comp", ret, fi_strerror(-ret));
@@ -214,11 +213,15 @@ static int get_cq_comp(void)
                 return ret;
     }
 
-end:
     static uint64_t last;
+    static uint64_t last_idx;
     uint64_t t = now();
     if (t - last > 1000000000) {
-        printf("busy %" PRId64 "\n", rx_idx - tx_idx);
+        float bps = 8. * (tx_idx - last_idx) * UBUF_DEFAULT_SIZE;
+        bps /= 1024 * 1024.;
+        printf("busy %" PRId64 , rx_idx - tx_idx);
+        printf(" tx_idx got + %" PRId64 " (%.2f Mbps)\n", tx_idx - last_idx, bps);
+        last_idx = tx_idx;
         last = t;
     }
 
@@ -229,31 +232,31 @@ static void tx(int n)
 {
     uint64_t idx = rx_idx;
     rx_idx += n;
+    static struct iovec msg_iov[3000];
 
     for (int i = 0; i < n; i++) {
         idx %= 3000;
-        struct iovec msg_iov = {
+        msg_iov[i] = (struct iovec) {
             .iov_base = (uint8_t*)tx_buf + idx++ * UBUF_DEFAULT_SIZE_A,
             .iov_len = UBUF_DEFAULT_SIZE,
         };
+    }
 
-        struct fi_msg msg = {
-            .msg_iov = &msg_iov,
-            .desc = fi_mr_desc (mr),
-            .iov_count = 1,
-            .addr = 0,
-            .context = NULL,
-            .data = 0,
-        };
+    struct fi_msg msg = {
+        .msg_iov = &msg_iov[0],
+        .desc = fi_mr_desc(mr),
+        .iov_count = n,
+        .addr = 0,
+        .context = NULL,
+        .data = 0,
+    };
 
-        ssize_t s = fi_sendmsg(ep, &msg, (i == n - 1) ? 0 : FI_MORE);
+    uint64_t flags = 0;
+    ssize_t s = fi_sendmsg(ep, &msg, flags);
 
-        if (s) {
-            fprintf(stderr, "fi_sendmsg\n");
-            abort();
-        }
-
-        tx_seq++;
+    if (s) {
+        fprintf(stderr, "fi_sendmsg : %s\n", fi_strerror(-s));
+        abort();
     }
 }
 
@@ -352,7 +355,6 @@ static void tx_free(void)
 
 static void tx_alloc(void)
 {
-    tx_seq = 0;
     rx_idx = 0;
     tx_idx = 0;
     output_uref = NULL;
@@ -559,7 +561,7 @@ int main(int argc, char **argv)
 
     // PROBE
 
-    for (int i = 0; i < 10; i++) { // don't check buffer, we have room for 10 packets
+    for (int i = 0; i < 8; i++) { // don't check buffer, we have room for 8 packets
         uint8_t *data_pkt = tx_buf + (i % 3000) * UBUF_DEFAULT_SIZE_A;
         data_pkt[0] = kPayloadTypeProbe;
         put_16le(&data_pkt[1], seq++);
@@ -567,7 +569,8 @@ int main(int argc, char **argv)
         put_32le(&data_pkt[5], id++);
     }
 
-    tx(10);
+    tx(4);
+    tx(6);
 
     seq = id = 0;
 
@@ -581,12 +584,14 @@ int main(int argc, char **argv)
 
         int avail = 3000 - (rx_idx - tx_idx);
         if (avail == 0) {
-            usleep(10000);
             continue;
         }
 
         if (avail > 580 - seq)
             avail = 580 - seq;
+
+        if (avail > 8)
+            avail = 8; // libfabric/include/sock.h:#define SOCK_EP_MAX_IOV_LIMIT (8)
 
 //        printf("avail %d\n", avail);
 
@@ -653,8 +658,7 @@ int main(int argc, char **argv)
             num++;
             seq = 0;
             offset = 0;
-            printf(".");
-            fflush(stdout);
+            printf(".\n");
         }
     }
 
