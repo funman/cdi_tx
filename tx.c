@@ -45,29 +45,9 @@
 
 #include <rdma/fi_cm.h>
 
-#define UBUF_DEFAULT_SIZE      8961
-#define UBUF_DEFAULT_SIZE_A    8968
+#include "util.h"
 
-#define FI_DEFAULT_PORT 47592
 #define CTRL_PORT 1234
-
-#define MAX_IP_STRING_LENGTH                (64)
-#define MAX_IPV6_GID_LENGTH                 (32)
-#define MAX_IPV6_ADDRESS_STRING_LENGTH      (64)
-
-#define CDI_MAX_CONNECTION_NAME_STRING_LENGTH           (128)
-#define CDI_MAX_STREAM_NAME_STRING_LENGTH               (CDI_MAX_CONNECTION_NAME_STRING_LENGTH+10)
-
-#define unlikely(x)     __builtin_expect(!!(x),0)
-
-#define RET(cmd)        \
-do {                    \
-    int ret = cmd;      \
-    if (unlikely(ret)) {\
-        fprintf(stderr, "%s():%d : ret=%d\n", __func__, __LINE__, ret); \
-    }                   \
-} while (0)
-
 
 static char *src;
 static char *dst;
@@ -113,75 +93,6 @@ static size_t height;
 static size_t buf_size;
 
 static fi_addr_t remote_fi_addr;
-
-typedef enum {
-    kProbeCommandReset = 1, ///< Request to reset the connection. Start with 1 so no commands have the value 0.
-    kProbeCommandPing,      ///< Request to ping the connection.
-    kProbeCommandConnected, ///< Notification that connection has been established (probe has completed).
-    kProbeCommandAck,       ///< Packet is an ACK response to a previously sent command.
-    kProbeCommandProtocolVersion, ///< Packet contains protocol version of sender.
-} ProbeCommand;
-
-static void put_64le(uint8_t *buf, const uint64_t val)
-{
-    for (int i = 0; i < 8; i++)
-        buf[i] = (val >> 8*i) & 0xff;
-}
-
-static void put_32le(uint8_t *buf, const uint32_t val)
-{
-    for (int i = 0; i < 4; i++)
-        buf[i] = (val >> 8*i) & 0xff;
-}
-
-static uint32_t get_32le(const uint8_t *buf)
-{
-    uint32_t val = 0;
-    for (int i = 0; i < 4; i++)
-        val |= buf[i] << i*8;
-    return val;
-}
-
-static uint64_t get_64le(const uint8_t *buf)
-{
-    uint64_t val = 0;
-    for (int i = 0; i < 8; i++)
-        val |= buf[i] << i*8;
-    return val;
-}
-
-static void put_16le(uint8_t *buf, const uint16_t val)
-{
-    *buf++ = val & 0xff;
-    *buf++ = val >> 8;
-}
-
-static uint16_t get_16le(const uint8_t *buf)
-{
-    uint16_t val = *buf++;
-    val |= *buf << 8;
-    return val;
-}
-
-typedef enum {
-    kPayloadTypeData = 0,   ///< Payload contains application payload data.
-    kPayloadTypeDataOffset, ///< Payload contains application payload data with data offset field in each packet.
-    kPayloadTypeProbe,      ///< Payload contains probe data.
-    kPayloadTypeKeepAlive,  ///< Payload is being used for keeping the connection alive (don't use app payload
-                            ///  callbacks).
-} CdiPayloadType;
-
-static uint64_t now(void)
-{
-    struct timespec ts;
-
-    if (clock_gettime(CLOCK_MONOTONIC, &ts) < 0) {
-        perror("clock_gettime");
-        return 0;
-    }
-
-    return (uint64_t)ts.tv_sec * UINT64_C(1000000000) + (uint64_t)ts.tv_nsec;
-}
 
 static int get_cq_comp(void)
 {
@@ -258,39 +169,6 @@ static void tx(int n)
         fprintf(stderr, "fi_sendmsg : %s\n", fi_strerror(-s));
         abort();
     }
-}
-
-static uint16_t CalculateChecksum(const uint8_t *buf, int size, const uint8_t *csum_pos)
-{
-    uint32_t cksum = 0;
-
-    // Sum entire packet.
-    while (size > 1) {
-        uint16_t word = get_16le(buf);
-        if (csum_pos) { /* zero checksum when verifying */
-            if (csum_pos == buf+1)
-                word &= 0x00ff;
-            else if (csum_pos == buf-1)
-                word &= 0xff00;
-            else if (csum_pos == buf) /* should not happen */ {
-                word = 0;
-                abort();
-            }
-        }
-        cksum += word;
-        buf += 2;
-        size -= 2;
-    }
-
-    // Pad to 16-bit boundary if necessary.
-    if (size == 1) {
-        cksum += *buf;
-    }
-
-    // Add carries and do one's complement.
-    cksum = (cksum >> 16) + (cksum & 0xffff);
-    cksum += (cksum >> 16);
-    return (uint16_t)(~cksum);
 }
 
 static int alloc_msgs (void)
@@ -418,10 +296,6 @@ static void tx_alloc(void)
 
     hints->fabric_attr->prov_name = NULL; // Value is statically allocated, so don't want libfabric to free it.
     fi_freeinfo (hints);
-}
-
-static uint8_t *get_pkt(void)
-{
 }
 
 static int conn(void)
