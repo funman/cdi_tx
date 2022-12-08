@@ -475,7 +475,7 @@ int main(int argc, char **argv)
             if (!is_offset) {
                 if (fread(pic, sizeof(pic), 1, stdin) != 1) {
                     perror("fread");
-                    break;
+                    goto end;
                 }
             }
 
