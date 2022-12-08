@@ -730,9 +730,7 @@ int main (void)
 
         int ret = poll(pfd, n, 5 /* ms */);
         switch (ret) {
-            case 0:
-                fprintf(stderr, ".");
-                fflush(stderr);
+            case 0: // timeout
                 continue;
             default:
                 break;
