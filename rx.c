@@ -79,6 +79,8 @@
 
 #include "util.h"
 
+static const unsigned int packet_count = 376;
+
 static int fd;
 static struct sockaddr_in dst;
 
@@ -245,34 +247,31 @@ static int get_cq_comp(struct fid_cq *cq)
 
 static ssize_t rx (void)
 {
-    if (get_cq_comp (rxcq)) {
+    if (get_cq_comp (rxcq))
         return -1;
-    }
 
-    uint64_t n = 1;//8;
-
-    struct iovec msg_iov[8];
-    for (int i = 0; i < n; i++) {
-        msg_iov[i].iov_base = (uint8_t*)rx_buf + ((rxidx+i)%376) * UBUF_DEFAULT_SIZE_A;
-        msg_iov[i].iov_len = UBUF_DEFAULT_SIZE;
+    struct iovec msg_iov = {
+        msg_iov.iov_base = (uint8_t*)rx_buf + (rxidx%packet_count) * UBUF_DEFAULT_SIZE_A,
+        msg_iov.iov_len = UBUF_DEFAULT_SIZE,
     };
 
-    assert(n <= sizeof(msg_iov)/sizeof(*msg_iov));
-
+    void *descs = fi_mr_desc(mr);
     struct fi_msg msg = {
-        .msg_iov = msg_iov,
-        .desc = fi_mr_desc (mr),
-        .iov_count = n,
+        .msg_iov = &msg_iov,
+        .desc = &descs,
+        .iov_count = 1,
         .addr = 0,
         .context = NULL,
         .data = 0,
     };
 
     ssize_t s = fi_recvmsg(ep, &msg, FI_COMPLETION);
-    if (s)
+    if (s) {
         fprintf(stderr, "fi_recvmsg");
+        return -1;
+    }
 
-    return n;
+    return 0;
 }
 
 static int alloc_msgs (void)
@@ -281,7 +280,6 @@ static int alloc_msgs (void)
     const size_t max_msg_size = fi->ep_attr->max_msg_size;
     static const unsigned int packet_buffer_alignment = 8;
     static const unsigned int packet_size = UBUF_DEFAULT_SIZE;
-    static const unsigned int packet_count = 376;
 
     const int aligned_packet_size = (packet_size + packet_buffer_alignment - 1) & ~(packet_buffer_alignment - 1);
     assert(aligned_packet_size == UBUF_DEFAULT_SIZE_A);
@@ -480,39 +478,21 @@ static void fisrc_worker2(void)
 {
     uint64_t systime = now();
 
-    ssize_t pkts = 1;
-    uint8_t *b= NULL;
+    while (!rx()) {
 
-//    printf("%s()\n", __func__);
+    printf("rxidx %zu\n", rxidx);
 
-    for (;;) {
-
-    if (--pkts <= 0) {
-        pkts = rx();
-//        printf("rx=%zd\n", pkts);
-        if (pkts < 0)
-            return;
-        printf("rxidx %zu\n", rxidx);
-        b = rx_buf + (rxidx % 376) * UBUF_DEFAULT_SIZE_A;
-        rxidx += pkts;
-    } else {
-        b += UBUF_DEFAULT_SIZE_A;
-        if (b == rx_buf + 376 * UBUF_DEFAULT_SIZE_A)
-            b = rx_buf;
-    }
-    uint8_t *buffer = b;
+    uint8_t *buffer = rx_buf + (rxidx++ % packet_count) * UBUF_DEFAULT_SIZE_A;
     ssize_t s = UBUF_DEFAULT_SIZE;
     size_t offset = 0;
-
-    assert(s >= 9);
-    assert(s == UBUF_DEFAULT_SIZE);
 
     uint8_t pt = buffer[0];
     uint16_t seq = get_16le(&buffer[1]);
     uint16_t num = get_16le(&buffer[3]);
     uint32_t id = get_32le(&buffer[5]);
-//    if (pt != kPayloadTypeDataOffset && pt != kPayloadTypeProbe /*&& pt != kPayloadTypeData */)
-//        fprintf(stderr, "PT %s(%d) - seq %d num %d id %d\n", get_pt(pt), pt, seq, num, id);
+    if (pt != kPayloadTypeDataOffset && pt != kPayloadTypeProbe /*&& pt != kPayloadTypeData */)
+        fprintf(stderr, "PT %s(%d) - seq %d num %d id %d\n", get_pt(pt), pt, seq, num, id);
+
     static int prev_id;
     if (id != prev_id + 1)
         printf("\terr\n");
@@ -522,7 +502,7 @@ static void fisrc_worker2(void)
     buffer += 9;
     s -= 9;
 
-    //assert(buffer[-9] == pt);
+    assert(buffer[-9] == pt);
 
     switch(pt) {
     case kPayloadTypeData:
@@ -734,16 +714,18 @@ int main (void)
     fisrc_alloc();
 
     /* post all RX buffers */
-    for (int i = 0; i < 376; i += 1) {
-        struct iovec msg_iov[8];
-        for (int j = 0; j < 1; j++) {
-            msg_iov[j].iov_base = (uint8_t*)rx_buf + (i+j) * UBUF_DEFAULT_SIZE_A;
-            msg_iov[j].iov_len = UBUF_DEFAULT_SIZE;
-        };
+    struct iovec msg_iov = {
+        .iov_base = (uint8_t*)rx_buf,
+        .iov_len = UBUF_DEFAULT_SIZE,
+    };
 
+    for (int i = 0; i < packet_count; i ++) {
+        msg_iov.iov_base += UBUF_DEFAULT_SIZE_A;
+
+        void *descs = fi_mr_desc(mr);
         struct fi_msg msg = {
-            .msg_iov = msg_iov,
-            .desc = fi_mr_desc (mr),
+            .msg_iov = &msg_iov,
+            .desc = &descs,
             .iov_count = 1,
             .addr = 0,
             .context = NULL,
@@ -751,7 +733,7 @@ int main (void)
         };
 
         uint64_t flags = 0;
-        if (i < 376 - 1)
+        if (i < packet_count - 1)
             flags |= FI_MORE;
         ssize_t s = fi_recvmsg(ep, &msg, flags);
         if (s) {
