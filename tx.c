@@ -48,6 +48,7 @@
 #include "util.h"
 
 #define CTRL_PORT 1234
+static const unsigned int packet_count = 582;
 
 static char *src;
 static char *dst;
@@ -55,12 +56,9 @@ static char *port;
 static int fd;
 static int sock;
 
-static int max_msg_size;
 static uint16_t src_port;
 static uint16_t dst_port;
 static char *dst_addr;
-
-static int transfer_size;
 
 static struct fi_info *fi;
 static struct fid_fabric *fabric;
@@ -73,8 +71,7 @@ static struct fid_av *av;
 static uint64_t rx_idx; // currently written to
 static uint64_t tx_idx; // actually transmitted
 
-static void *buf, *tx_buf;
-static size_t x_size;
+static void *tx_buf;
 
 static uint8_t state;
 
@@ -91,6 +88,7 @@ static size_t width;
 static size_t height;
 
 static size_t buf_size;
+static bool use_free;
 
 static fi_addr_t remote_fi_addr;
 
@@ -141,21 +139,25 @@ static int get_cq_comp(void)
 
 static void tx(int n)
 {
+//    printf("%s(%d)\n", __func__, n);
+
     uint64_t idx = rx_idx;
     rx_idx += n;
-    static struct iovec msg_iov[3000];
+    static struct iovec msg_iov[1024];
 
     for (int i = 0; i < n; i++) {
-        idx %= 3000;
+        idx %= packet_count;
         msg_iov[i] = (struct iovec) {
             .iov_base = (uint8_t*)tx_buf + idx++ * UBUF_DEFAULT_SIZE_A,
             .iov_len = UBUF_DEFAULT_SIZE,
         };
     }
+    static void* descs[1];
+    descs[0] = fi_mr_desc(mr);
 
     struct fi_msg msg = {
-        .msg_iov = &msg_iov[0],
-        .desc = fi_mr_desc(mr),
+        .msg_iov = msg_iov,
+        .desc = descs,
         .iov_count = n,
         .addr = 0,
         .context = NULL,
@@ -166,34 +168,21 @@ static void tx(int n)
     ssize_t s = fi_sendmsg(ep, &msg, flags);
 
     if (s) {
-        fprintf(stderr, "fi_sendmsg : %s\n", fi_strerror(-s));
+        fprintf(stderr, "fi_sendmsg (idx %" PRIu64 ") : %s\n", rx_idx, fi_strerror(-s));
         abort();
     }
 }
 
 static int alloc_msgs (void)
 {
-    const unsigned int size_max_power_two = 22;
-    const size_t max_msg_size = fi->ep_attr->max_msg_size;
     static const unsigned int packet_buffer_alignment = 8;
     static const unsigned int packet_size = UBUF_DEFAULT_SIZE;
-    static const unsigned int packet_count = 3000;
+    fi->ep_attr->max_msg_size = packet_size;
 
     const int aligned_packet_size = (packet_size + packet_buffer_alignment - 1) & ~(packet_buffer_alignment - 1);
     assert(aligned_packet_size == UBUF_DEFAULT_SIZE_A);
-    int allocated_size = aligned_packet_size * packet_count;
+    buf_size = aligned_packet_size * packet_count;
 
-    x_size = (1 << size_max_power_two) + (1 << (size_max_power_two - 1));
-    x_size = allocated_size;
-
-    if (x_size > max_msg_size)
-        x_size = max_msg_size;
-
-    buf_size = x_size;
-
-    assert(x_size >= transfer_size);
-
-    errno = 0;
     long alignment = sysconf (_SC_PAGESIZE);
     if (alignment <= 0)
         return 1;
@@ -201,17 +190,18 @@ static int alloc_msgs (void)
     #define CDI_HUGE_PAGES_BYTE_SIZE    (2 * 1024 * 1024)
     buf_size += CDI_HUGE_PAGES_BYTE_SIZE;
     buf_size &= ~(CDI_HUGE_PAGES_BYTE_SIZE-1);
+    printf("buf size %zu\n", buf_size);
 
-    buf = mmap(NULL, buf_size, PROT_READ | PROT_WRITE, MAP_PRIVATE | MAP_ANONYMOUS | MAP_HUGETLB, -1, 0);
-    if (buf == MAP_FAILED) {
-        RET(posix_memalign (&buf, (size_t) alignment, buf_size));
+    tx_buf = mmap(NULL, buf_size, PROT_READ | PROT_WRITE, MAP_PRIVATE | MAP_ANONYMOUS | MAP_HUGETLB, -1, 0);
+    if (tx_buf == MAP_FAILED) {
+        RET(posix_memalign (&tx_buf, (size_t) alignment, buf_size));
+        use_free = true;
     }
 
-    memset (buf, 0, buf_size);
-    tx_buf = buf;
+    memset (tx_buf, 0, buf_size);
 
-    RET(fi_mr_reg (domain, buf, buf_size,
-            FI_RECV, 0, 0, 0, &mr, NULL));
+    RET(fi_mr_reg (domain, tx_buf, buf_size,
+            FI_SEND, 0, 0, 0, &mr, NULL));
 
     return 0;
 }
@@ -225,8 +215,10 @@ static void tx_free(void)
     fi_close(&domain->fid);
     fi_close(&fabric->fid);
 
-//    free (buf); // FIXME
-    munmap(buf, buf_size);
+    if (use_free)
+        free (tx_buf);
+    else
+        munmap(tx_buf, buf_size);
 
     fi_freeinfo (fi);
 }
@@ -237,12 +229,9 @@ static void tx_alloc(void)
     tx_idx = 0;
     output_uref = NULL;
 
-    max_msg_size = 0;
-
     src_port = FI_DEFAULT_PORT+1;
     dst_port = FI_DEFAULT_PORT;
 
-    max_msg_size = transfer_size = UBUF_DEFAULT_SIZE;
     ctrl_packet_num = 0;
 
     struct fi_info *hints = fi_allocinfo();
@@ -261,6 +250,7 @@ static void tx_alloc(void)
     hints->domain_attr->resource_mgmt = FI_RM_ENABLED;
     hints->domain_attr->threading = FI_THREAD_DOMAIN;
     hints->tx_attr->comp_order = FI_ORDER_NONE;
+    hints->rx_attr->comp_order = FI_ORDER_NONE;
 
     char *node = dst;
     char service[12];
@@ -436,15 +426,14 @@ int main(int argc, char **argv)
     // PROBE
 
     for (int i = 0; i < 8; i++) { // don't check buffer, we have room for 8 packets
-        uint8_t *data_pkt = tx_buf + (i % 3000) * UBUF_DEFAULT_SIZE_A;
+        uint8_t *data_pkt = tx_buf + (i % packet_count) * UBUF_DEFAULT_SIZE_A;
         data_pkt[0] = kPayloadTypeProbe;
         put_16le(&data_pkt[1], seq++);
         put_16le(&data_pkt[3], num);
         put_32le(&data_pkt[5], id++);
     }
 
-    tx(4);
-    tx(6);
+    tx(8);
 
     seq = id = 0;
 
@@ -452,11 +441,12 @@ int main(int argc, char **argv)
 
     static uint8_t pic[1920*1080*5/2]; /* 40 bits per 2 pixels (UYVY) */
 
+
     for (;;) {
         if (get_cq_comp())
             fprintf(stderr, "get_cq_comp failed\n");
 
-        int avail = 3000 - (rx_idx - tx_idx);
+        int avail = packet_count - (rx_idx - tx_idx);
         if (avail == 0) {
             continue;
         }
@@ -464,13 +454,10 @@ int main(int argc, char **argv)
         if (avail > 580 - seq)
             avail = 580 - seq;
 
-        if (avail > 8)
-            avail = 8; // libfabric/include/sock.h:#define SOCK_EP_MAX_IOV_LIMIT (8)
-
-//        printf("avail %d\n", avail);
+        avail = 1;
 
         for (int i = 0; i < avail; i++) {
-            uint8_t *pkt_buf = tx_buf + ((rx_idx + i) % 3000) * UBUF_DEFAULT_SIZE_A;
+            uint8_t *pkt_buf = tx_buf + ((rx_idx + i) % packet_count) * UBUF_DEFAULT_SIZE_A;
             bool is_offset = seq != 0;
             if (!is_offset) {
                 if (fread(pic, sizeof(pic), 1, stdin) != 1) {
@@ -524,9 +511,8 @@ int main(int argc, char **argv)
             memcpy(pkt_buf, &pic[offset], s);
 
             offset += s;
+            tx(1);
         }
-
-        tx(avail);
 
         if (seq == 580) { // (1920*1080*5/2+1290+36)/(8961-9-4) == 579.495529 pkts per frame
             num++;

@@ -97,8 +97,6 @@ static struct fid_cq *rxcq;
 static struct fid_mr *mr;
 static struct fid_av *av;
 
-static uint64_t rx_seq, rx_cq_cntr;
-
 static void *buf, *rx_buf;
 static size_t x_size;
 static size_t buf_size;
@@ -116,6 +114,8 @@ static char ip[INET6_ADDRSTRLEN];
 
 static size_t width;
 static size_t height;
+
+static size_t rxidx;
 
 static const char *get_cmd(ProbeCommand cmd)
 {
@@ -208,77 +208,71 @@ static void fisrc_parse_cmd(const uint8_t *buf, size_t n, ProbeCommand *command)
         fprintf(stderr, "bad checksum 0x%.4x != 0x%.4x\n", csum, checksum);
     }
 
-    fprintf(stderr, "v%u.%u.%u %s senders ip %s - stream name %s - ctrl dst port %hu - pkt num %hu\n",
-            v, major, probe, get_cmd(*command),
-        senders_ip_str, senders_stream_name_str, senders_control_dest_port, pkt_num);
+    fprintf(stderr, "#%hu v%u.%u.%u %s:%hu \"%s\" %s\n",
+            pkt_num, v, major, probe,
+            senders_ip_str, senders_control_dest_port, senders_stream_name_str,
+            get_cmd(*command)
+        );
 }
 
-static int get_cq_comp(struct fid_cq *cq, uint64_t *cur, uint64_t total)
+static int get_cq_comp(struct fid_cq *cq)
 {
     struct fi_cq_data_entry comp[50];
 
-    int z = 0;
-    do {
-        int ret = fi_cq_read (cq, &comp, 50);
-        if (ret > 0) {
-            if (ret != 1)
-                printf("cq_read %d\n", ret);
-            (*cur) += ret;
-        } else if (ret == -FI_EAGAIN) {
-            if (z++ > 10)
-                return 1;
-            continue;
-        } else if (ret == -FI_EAVAIL) {
-            (*cur)++;
-            struct fi_cq_err_entry cq_err = { 0 };
+    int ret = fi_cq_read (cq, comp, 1);
+    if (ret > 0) {
+    } else if (ret == -FI_EAGAIN) {
+            return -1;
+    } else if (ret == -FI_EAVAIL) {
+        struct fi_cq_err_entry cq_err = { 0 };
 
-            int ret = fi_cq_readerr (cq, &cq_err, 0);
-            if (ret < 0) {
-                fprintf(stderr, "%s(): ret=%d (%s)\n", "fi_cq_readerr\n", ret, fi_strerror(-ret));
-                return ret;
-            }
-
-            fprintf(stderr, "X %s\n", fi_cq_strerror (cq, cq_err.prov_errno,
-                        cq_err.err_data, NULL, 0));
-            return -cq_err.err;
-        } else if (ret < 0) {
-            fprintf(stderr, "%s(): ret=%d (%s)\n", "get_cq_comp\n", ret, fi_strerror(-ret));
+        int ret = fi_cq_readerr (cq, &cq_err, 0);
+        if (ret < 0) {
+            fprintf(stderr, "%s(): ret=%d (%s)\n", "fi_cq_readerr\n", ret, fi_strerror(-ret));
             return ret;
         }
-    } while (total - *cur > 0);
+
+        fprintf(stderr, "X %s\n", fi_cq_strerror (cq, cq_err.prov_errno,
+                    cq_err.err_data, NULL, 0));
+        return -cq_err.err;
+    } else if (ret < 0) {
+        fprintf(stderr, "%s(): ret=%d (%s)\n", "get_cq_comp\n", ret, fi_strerror(-ret));
+        return ret;
+    }
 
     return 0;
 }
 
 static ssize_t rx (void)
 {
-    if (get_cq_comp (rxcq, &rx_cq_cntr, rx_seq))
+    if (get_cq_comp (rxcq)) {
         return -1;
+    }
 
-    uint64_t n = rx_cq_cntr % 3000;
+    uint64_t n = 1;//8;
 
-    struct iovec msg_iov = {
-        .iov_base = (uint8_t*)rx_buf + n * UBUF_DEFAULT_SIZE_A,
-        .iov_len = UBUF_DEFAULT_SIZE,
+    struct iovec msg_iov[8];
+    for (int i = 0; i < n; i++) {
+        msg_iov[i].iov_base = (uint8_t*)rx_buf + ((rxidx+i)%376) * UBUF_DEFAULT_SIZE_A;
+        msg_iov[i].iov_len = UBUF_DEFAULT_SIZE;
     };
 
+    assert(n <= sizeof(msg_iov)/sizeof(*msg_iov));
+
     struct fi_msg msg = {
-        .msg_iov = &msg_iov,
+        .msg_iov = msg_iov,
         .desc = fi_mr_desc (mr),
-        .iov_count = 1,
+        .iov_count = n,
         .addr = 0,
         .context = NULL,
         .data = 0,
     };
 
-    ssize_t s = fi_recvmsg(ep, &msg, FI_RECV);
-    if (!s)
-        rx_seq++;
-    else {
+    ssize_t s = fi_recvmsg(ep, &msg, FI_COMPLETION);
+    if (s)
         fprintf(stderr, "fi_recvmsg");
-    }
 
-    return msg_iov.iov_len;
+    return n;
 }
 
 static int alloc_msgs (void)
@@ -287,7 +281,7 @@ static int alloc_msgs (void)
     const size_t max_msg_size = fi->ep_attr->max_msg_size;
     static const unsigned int packet_buffer_alignment = 8;
     static const unsigned int packet_size = UBUF_DEFAULT_SIZE;
-    static const unsigned int packet_count = 3000;
+    static const unsigned int packet_count = 376;
 
     const int aligned_packet_size = (packet_size + packet_buffer_alignment - 1) & ~(packet_buffer_alignment - 1);
     assert(aligned_packet_size == UBUF_DEFAULT_SIZE_A);
@@ -328,9 +322,6 @@ static int alloc_msgs (void)
 
 static void fisrc_alloc(void)
 {
-    rx_seq = 0;
-    rx_cq_cntr = 0;
-
     max_msg_size = 0;
 
     max_msg_size = transfer_size = UBUF_DEFAULT_SIZE;
@@ -343,13 +334,14 @@ static void fisrc_alloc(void)
     hints->caps = FI_MSG;
     hints->mode = FI_CONTEXT;
     hints->domain_attr->mr_mode =
-        FI_MR_LOCAL | FI_MR_ALLOCATED | FI_MR_PROV_KEY | FI_MR_VIRT_ADDR;
+        FI_MR_LOCAL | FI_MR_ALLOCATED /*| FI_MR_PROV_KEY */| FI_MR_VIRT_ADDR;
 
     hints->fabric_attr->prov_name = (char*)"sockets";
     hints->ep_attr->type = FI_EP_RDM;
     hints->domain_attr->resource_mgmt = FI_RM_ENABLED;
-    hints->domain_attr->threading = FI_THREAD_SAFE;
+    hints->domain_attr->threading = FI_THREAD_DOMAIN;
     hints->rx_attr->comp_order = FI_ORDER_NONE;
+    hints->tx_attr->comp_order = FI_ORDER_NONE;
 
     RET(fi_getinfo (FI_VERSION (FI_MAJOR_VERSION, FI_MINOR_VERSION),
             NULL, NULL, FI_SOURCE /* ? */, hints, &fi));
@@ -401,8 +393,8 @@ static void transmit(ProbeCommand cmd, bool requires_ack, ProbeCommand reply)
 
     // senders_version
     *buf++ = 2;
-    *buf++ = 1;
-    *buf++ = 4;
+    *buf++ = 2;
+    *buf++ = 5;
 
     // ProbeCommand
     put_32le(buf, cmd);
@@ -488,14 +480,29 @@ static void fisrc_worker2(void)
 {
     uint64_t systime = now();
 
-    for (;;) {
-    uint64_t n = rx_cq_cntr % 3000;
-    uint8_t *buffer = rx_buf + n * UBUF_DEFAULT_SIZE_A;
-    ssize_t s = rx();
+    ssize_t pkts = 1;
+    uint8_t *b= NULL;
 
+//    printf("%s()\n", __func__);
+
+    for (;;) {
+
+    if (--pkts <= 0) {
+        pkts = rx();
+//        printf("rx=%zd\n", pkts);
+        if (pkts < 0)
+            return;
+        printf("rxidx %zu\n", rxidx);
+        b = rx_buf + (rxidx % 376) * UBUF_DEFAULT_SIZE_A;
+        rxidx += pkts;
+    } else {
+        b += UBUF_DEFAULT_SIZE_A;
+        if (b == rx_buf + 376 * UBUF_DEFAULT_SIZE_A)
+            b = rx_buf;
+    }
+    uint8_t *buffer = b;
+    ssize_t s = UBUF_DEFAULT_SIZE;
     size_t offset = 0;
-    if (s <= 0)
-        return;
 
     assert(s >= 9);
     assert(s == UBUF_DEFAULT_SIZE);
@@ -505,7 +512,12 @@ static void fisrc_worker2(void)
     uint16_t num = get_16le(&buffer[3]);
     uint32_t id = get_32le(&buffer[5]);
 //    if (pt != kPayloadTypeDataOffset && pt != kPayloadTypeProbe /*&& pt != kPayloadTypeData */)
-        fprintf(stderr, "PT %s(%d) - seq %d num %d id %d\n", get_pt(pt), pt, seq, num, id);
+//        fprintf(stderr, "PT %s(%d) - seq %d num %d id %d\n", get_pt(pt), pt, seq, num, id);
+    static int prev_id;
+    if (id != prev_id + 1)
+        printf("\terr\n");
+    printf("id %d\n", id);
+    prev_id = id;
 
     buffer += 9;
     s -= 9;
@@ -609,7 +621,7 @@ static void fisrc_worker2(void)
         s = 5184000 - offset;
     memcpy(&x[offset], buffer, s);
 
-    if (offset + s == 5184000) {
+    if (0 && offset + s == 5184000) {
         const uint8_t *src = x;
         for (int i = 0; i < 1920*1080; i += 2) {
             uint8_t a = *src++;
@@ -625,7 +637,7 @@ static void fisrc_worker2(void)
     }
 
     if (offset + s >= 5184000) {
-        // PIC
+        printf("PIC\n");
     }
     }
 }
@@ -677,8 +689,10 @@ static void protocol(void)
     transmit(kProbeCommandAck, false, cmd);
     if (cmd == kProbeCommandProtocolVersion)
         probe_state = kProbeStateEfaProbe;
-    if (cmd == kProbeCommandPing)
+    if (cmd == kProbeCommandPing) {
         probe_state = kProbeStateEfaConnected;
+        printf("\tCONNECTED\n\n");
+    }
 }
 
 static void fisrc_free(void)
@@ -719,6 +733,32 @@ int main (void)
 
     fisrc_alloc();
 
+    /* post all RX buffers */
+    for (int i = 0; i < 376; i += 1) {
+        struct iovec msg_iov[8];
+        for (int j = 0; j < 1; j++) {
+            msg_iov[j].iov_base = (uint8_t*)rx_buf + (i+j) * UBUF_DEFAULT_SIZE_A;
+            msg_iov[j].iov_len = UBUF_DEFAULT_SIZE;
+        };
+
+        struct fi_msg msg = {
+            .msg_iov = msg_iov,
+            .desc = fi_mr_desc (mr),
+            .iov_count = 1,
+            .addr = 0,
+            .context = NULL,
+            .data = 0,
+        };
+
+        uint64_t flags = 0;
+        if (i < 376 - 1)
+            flags |= FI_MORE;
+        ssize_t s = fi_recvmsg(ep, &msg, flags);
+        if (s) {
+            fprintf(stderr, "fi_recvmsg\n");
+        }
+    }
+
     for (;;) {
         struct pollfd pfd[1] = {
             {
@@ -728,9 +768,11 @@ int main (void)
         };
         nfds_t n = sizeof(pfd) / sizeof(*pfd);
 
-        int ret = poll(pfd, n, 5 /* ms */);
+        int ret = poll(pfd, n, 0 /* ms */);
         switch (ret) {
             case 0: // timeout
+                if (probe_state == kProbeStateEfaConnected)
+                    fisrc_worker2();
                 continue;
             default:
                 break;
