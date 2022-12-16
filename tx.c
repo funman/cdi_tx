@@ -99,8 +99,7 @@ static int get_cq_comp(void)
     int ret = fi_cq_read (txcq, comp, sizeof(comp) / sizeof(*comp));
     if (ret > 0) {
         tx_idx += ret;
-        printf("%d ", ret);
-        fflush(stdout);
+//        printf("%d ", ret); fflush(stdout);
     } else switch (ret) {
         case -FI_EAGAIN: break;
         case 0: break;
@@ -137,28 +136,18 @@ static int get_cq_comp(void)
     return 0;
 }
 
-static void tx(int n)
+static void tx(void)
 {
-//    printf("%s(%d)\n", __func__, n);
-
-    uint64_t idx = rx_idx;
-    rx_idx += n;
-    static struct iovec msg_iov[1024];
-
-    for (int i = 0; i < n; i++) {
-        idx %= packet_count;
-        msg_iov[i] = (struct iovec) {
-            .iov_base = (uint8_t*)tx_buf + idx++ * UBUF_DEFAULT_SIZE_A,
-            .iov_len = UBUF_DEFAULT_SIZE,
-        };
-    }
-    static void* descs[1];
-    descs[0] = fi_mr_desc(mr);
+    struct iovec msg_iov = {
+        .iov_base = (uint8_t*)tx_buf + (rx_idx++ % packet_count) * UBUF_DEFAULT_SIZE_A,
+        .iov_len = UBUF_DEFAULT_SIZE,
+    };
+    void *descs = fi_mr_desc(mr);
 
     struct fi_msg msg = {
-        .msg_iov = msg_iov,
-        .desc = descs,
-        .iov_count = n,
+        .msg_iov = &msg_iov,
+        .desc = &descs,
+        .iov_count = 1,
         .addr = 0,
         .context = NULL,
         .data = 0,
@@ -431,9 +420,8 @@ int main(int argc, char **argv)
         put_16le(&data_pkt[1], seq++);
         put_16le(&data_pkt[3], num);
         put_32le(&data_pkt[5], id++);
+        tx();
     }
-
-    tx(8);
 
     seq = id = 0;
 
@@ -453,8 +441,6 @@ int main(int argc, char **argv)
 
         if (avail > 580 - seq)
             avail = 580 - seq;
-
-        avail = 1;
 
         for (int i = 0; i < avail; i++) {
             uint8_t *pkt_buf = tx_buf + ((rx_idx + i) % packet_count) * UBUF_DEFAULT_SIZE_A;
@@ -511,14 +497,16 @@ int main(int argc, char **argv)
             memcpy(pkt_buf, &pic[offset], s);
 
             offset += s;
-            tx(1);
+        }
+        for (int i = 0; i < avail; i++) {
+            tx();
         }
 
         if (seq == 580) { // (1920*1080*5/2+1290+36)/(8961-9-4) == 579.495529 pkts per frame
             num++;
             seq = 0;
             offset = 0;
-            printf(".\n");
+//            printf(".\n");
         }
     }
 
