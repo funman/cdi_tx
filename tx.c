@@ -48,7 +48,7 @@
 #include "util.h"
 
 #define CTRL_PORT 1234
-static const unsigned int packet_count = 582;
+static const unsigned int packet_count = 580;
 
 static char *src;
 static char *dst;
