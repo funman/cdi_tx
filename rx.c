@@ -79,17 +79,14 @@
 
 #include "util.h"
 
-static const unsigned int packet_count = 376;
+static const unsigned int packet_count = 580;
 
 static int fd;
 static struct sockaddr_in dst;
 
-static int max_msg_size;
 static uint16_t src_port;
 static uint16_t dst_port;
 static char *dst_addr;
-
-static int transfer_size;
 
 static struct fi_info *fi;
 static struct fid_fabric *fabric;
@@ -276,24 +273,14 @@ static ssize_t rx (void)
 
 static int alloc_msgs (void)
 {
-    const unsigned int size_max_power_two = 22;
-    const size_t max_msg_size = fi->ep_attr->max_msg_size;
     static const unsigned int packet_buffer_alignment = 8;
     static const unsigned int packet_size = UBUF_DEFAULT_SIZE;
 
     const int aligned_packet_size = (packet_size + packet_buffer_alignment - 1) & ~(packet_buffer_alignment - 1);
     assert(aligned_packet_size == UBUF_DEFAULT_SIZE_A);
-    int allocated_size = aligned_packet_size * packet_count;
-
-    x_size = (1 << size_max_power_two) + (1 << (size_max_power_two - 1));
-    x_size = allocated_size;
-
-    if (x_size > max_msg_size)
-        x_size = max_msg_size;
+    x_size = aligned_packet_size * packet_count;
 
     size_t buf_size = x_size;
-
-    assert(x_size >= transfer_size);
 
     errno = 0;
     long alignment = sysconf (_SC_PAGESIZE);
@@ -320,9 +307,6 @@ static int alloc_msgs (void)
 
 static void fisrc_alloc(void)
 {
-    max_msg_size = 0;
-
-    max_msg_size = transfer_size = UBUF_DEFAULT_SIZE;
     ctrl_packet_num = 0;
 
     struct fi_info *hints = fi_allocinfo();
