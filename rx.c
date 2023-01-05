@@ -218,7 +218,7 @@ static int get_cq_comp(struct fid_cq *cq)
 {
     struct fi_cq_data_entry comp[50];
 
-    int ret = fi_cq_read (cq, comp, 1);
+    int ret = fi_cq_read (cq, comp, sizeof(comp)/sizeof(*comp));
     if (ret > 0) {
     } else if (ret == -FI_EAGAIN) {
             return -1;
