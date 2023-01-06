@@ -79,7 +79,7 @@
 
 #include "util.h"
 
-static const unsigned int packet_count = 580;
+static const unsigned int packet_count = 586;
 
 static int fd;
 static struct sockaddr_in dst;

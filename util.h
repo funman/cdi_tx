@@ -11,8 +11,8 @@ do {                    \
     }                   \
 } while(0)
 
-#define UBUF_DEFAULT_SIZE      8961
-#define UBUF_DEFAULT_SIZE_A    8968
+#define UBUF_DEFAULT_SIZE      8864
+#define UBUF_DEFAULT_SIZE_A    8864
 
 #define FI_DEFAULT_PORT 47592
 

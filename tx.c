@@ -48,7 +48,7 @@
 #include "util.h"
 
 #define CTRL_PORT 1234
-static const unsigned int packet_count = 580;
+static const unsigned int packet_count = 586;
 
 static char *src;
 static char *dst;
@@ -414,7 +414,7 @@ int main(int argc, char **argv)
 
     // PROBE
 
-    for (int i = 0; i < 8; i++) { // don't check buffer, we have room for 8 packets
+    for (int i = 0; i < 586; i++) {
         uint8_t *data_pkt = tx_buf + (i % packet_count) * UBUF_DEFAULT_SIZE_A;
         data_pkt[0] = kPayloadTypeProbe;
         put_16le(&data_pkt[1], seq++);
@@ -439,8 +439,8 @@ int main(int argc, char **argv)
             continue;
         }
 
-        if (avail > 580 - seq)
-            avail = 580 - seq;
+        if (avail > 586 - seq)
+            avail = 586 - seq;
 
         for (int i = 0; i < avail; i++) {
             uint8_t *pkt_buf = tx_buf + ((rx_idx + i) % packet_count) * UBUF_DEFAULT_SIZE_A;
@@ -502,7 +502,7 @@ int main(int argc, char **argv)
             tx();
         }
 
-        if (seq == 580) { // (1920*1080*5/2+1290+36)/(8961-9-4) == 579.495529 pkts per frame
+        if (seq == 586) { // (1920*1080*5/2+1290+36)/(8864-9-4) == 585.846345 pkts per frame
             num++;
             seq = 0;
             offset = 0;
