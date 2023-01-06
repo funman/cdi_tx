@@ -194,7 +194,7 @@ static void fisrc_parse_cmd(const uint8_t *buf, size_t n, ProbeCommand *command)
         buf += 2;
         n -= 2;
 
-        fprintf(stderr, "ack cmd: %d - num %d\n", ack_command, ack_control_packet_num);
+        printf("ack cmd: %d - num %d\n", ack_command, ack_control_packet_num);
     } else {
         bool requires_ack = buf[0];
         (void)requires_ack;
@@ -207,7 +207,7 @@ static void fisrc_parse_cmd(const uint8_t *buf, size_t n, ProbeCommand *command)
         fprintf(stderr, "bad checksum 0x%.4x != 0x%.4x\n", csum, checksum);
     }
 
-    fprintf(stderr, "#%hu v%u.%u.%u %s:%hu \"%s\" %s\n",
+    printf("#%hu v%u.%u.%u %s:%hu \"%s\" %s\n",
             pkt_num, v, major, probe,
             senders_ip_str, senders_control_dest_port, senders_stream_name_str,
             get_cmd(*command)
@@ -475,12 +475,14 @@ static void fisrc_worker2(void)
     uint16_t num = get_16le(&buffer[3]);
     uint32_t id = get_32le(&buffer[5]);
     if (pt != kPayloadTypeDataOffset && pt != kPayloadTypeProbe /*&& pt != kPayloadTypeData */)
-        fprintf(stderr, "PT %s(%d) - seq %d num %d id %d\n", get_pt(pt), pt, seq, num, id);
+        printf("PT %s(%d) - seq %d num %d id %d\n", get_pt(pt), pt, seq, num, id);
 
     static int prev_id;
     if (id != prev_id + 1)
         printf("\terr\n");
     printf("id %d\n", id);
+
+    printf("id - rx %zu\n", rxidx - id);
     prev_id = id;
 
     buffer += 9;
@@ -505,8 +507,7 @@ static void fisrc_worker2(void)
             uint64_t tx_start_time_microseconds = get_64le(buffer); buffer += 8;
             // TODO : mesure network latency?
 
-            fprintf(stderr,
-                    "total payload size %u max latency usecs %" PRId64 " PTP %u.%09u userdata %" PRIx64 " extradata %d tx_start_time_usec %" PRId64 "\n",
+            printf("total payload size %u max latency usecs %" PRId64 " PTP %u.%09u userdata %" PRIx64 " extradata %d tx_start_time_usec %" PRId64 "\n",
 
                     total_payload_size,
                     max_latency_microsecs,
@@ -546,12 +547,12 @@ static void fisrc_worker2(void)
     }
 
     {
-//    fprintf(stderr, "%s(offset=%zu) at %.6f\n", __func__, offset, ((float)systime) / 27000000.);
+//    printf("%s(offset=%zu) at %.6f\n", __func__, offset, ((float)systime) / 27000000.);
         static uint64_t start;
         if (offset == 0)
             start = systime;
         if (offset + s > 5184000) {
-            fprintf(stderr, "got pic after %.6f ms\n", ((float)(systime - start)) / 27000.);
+            printf("got pic after %.6f ms\n", ((float)(systime - start)) / 27000.);
         }
     }
 
