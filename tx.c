@@ -52,12 +52,9 @@ static const unsigned int packet_count = 586;
 
 static char *src;
 static char *dst;
-static char *port;
 static int fd;
 static int sock;
 
-static uint16_t src_port;
-static uint16_t dst_port;
 static char *dst_addr;
 
 static struct fi_info *fi;
@@ -212,14 +209,11 @@ static void tx_free(void)
     fi_freeinfo (fi);
 }
 
-static void tx_alloc(void)
+static void tx_alloc(int port)
 {
     rx_idx = 0;
     tx_idx = 0;
     output_uref = NULL;
-
-    src_port = FI_DEFAULT_PORT+1;
-    dst_port = FI_DEFAULT_PORT;
 
     ctrl_packet_num = 0;
 
@@ -243,7 +237,7 @@ static void tx_alloc(void)
 
     char *node = dst;
     char service[12];
-    snprintf(service, sizeof(service), "%d", atoi(port) + 1);
+    snprintf(service, sizeof(service), "%d", port);
     RET(fi_getinfo (FI_VERSION (FI_MAJOR_VERSION, FI_MINOR_VERSION),
                 efa ? NULL : node, efa ? NULL : service,
                 0/* ? */, hints, &fi));
@@ -358,15 +352,14 @@ int main(int argc, char **argv)
 
     src = argv[1];
     dst = argv[2];
-    port = strchr(dst, ':');
-    if (!port) {
+    char *p = strchr(dst, ':');
+    if (!p) {
         fprintf(stderr, "Invalid port\n");
         return 2;
     }
 
-    *port++ = '\0';
-
-    int p = atoi(port);
+    *p++ = '\0';
+    int port = atoi(p);
 
     struct in_addr a_dst;
     if (!inet_aton(dst, &a_dst)) {
@@ -396,14 +389,14 @@ int main(int argc, char **argv)
         return 6;
     }
 
-    addr.sin_port = htons(p);
+    addr.sin_port = htons(port);
     addr.sin_addr = a_dst;
     if (connect(sock, (struct sockaddr*)&addr, (socklen_t)sizeof(addr)) < 0) {
         perror("connect");
         return 7;
     }
 
-    tx_alloc();
+    tx_alloc(port);
 
     if (conn())
         return 8;
