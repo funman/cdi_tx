@@ -84,8 +84,6 @@ static const unsigned int packet_count = 586;
 static int fd;
 static struct sockaddr_in dst;
 
-static uint16_t src_port;
-static uint16_t dst_port;
 static char *dst_addr;
 
 static struct fi_info *fi;
@@ -674,10 +672,14 @@ static void fisrc_free(void)
     fi_freeinfo (fi);
 }
 
-int main (void)
+int main (int argc, char **argv)
 {
-    src_port = FI_DEFAULT_PORT+1;
-    dst_port = FI_DEFAULT_PORT;
+    if (argc != 2) {
+        fprintf(stderr, "Usage: %s port\n", argv[0]);
+        return 1;
+    }
+
+    uint16_t port = atoi(argv[1]);
 
     fd = socket(AF_INET, SOCK_DGRAM, 0);
     if (fd < 0) {
@@ -688,7 +690,7 @@ int main (void)
     struct sockaddr_in addr = {
         .sin_family = AF_INET,
         .sin_addr = INADDR_ANY,
-        .sin_port = htons(src_port),
+        .sin_port = htons(port),
     };
 
     if (bind(fd, (struct sockaddr*)&addr, (socklen_t)sizeof(addr)) < 0) {

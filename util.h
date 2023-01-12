@@ -14,9 +14,6 @@ do {                    \
 #define UBUF_DEFAULT_SIZE      8864
 #define UBUF_DEFAULT_SIZE_A    8864
 
-#define FI_DEFAULT_PORT 47592
-
-
 #define MAX_IP_STRING_LENGTH                (64)
 
 #define MAX_IPV6_GID_LENGTH                 (32)
