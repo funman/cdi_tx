@@ -47,6 +47,7 @@
 
 #include "util.h"
 
+// (1920*1080*5/2+1290+36)/(8864-9-4) == 585.846345 pkts per frame
 static const unsigned int packet_count = 586;
 
 static char *src;
@@ -401,11 +402,10 @@ static void data_pkt(unsigned int idx)
 
     offset += s;
 
-    if (seq == 586) { // (1920*1080*5/2+1290+36)/(8864-9-4) == 585.846345 pkts per frame
+    if (seq == packet_count) {
         num++;
         seq = 0;
         offset = 0;
-        //            printf(".\n");
     }
 }
 
@@ -415,8 +415,8 @@ static void data(void)
         fprintf(stderr, "get_cq_comp failed\n");
 
     unsigned int avail = packet_count - (rx_idx - tx_idx);
-    if (avail > 586 - seq)
-        avail = 586 - seq;
+    if (avail > packet_count - seq)
+        avail = packet_count - seq;
 
     for (unsigned int i = 0; i < avail; i++) {
         data_pkt(i);
@@ -497,7 +497,7 @@ int main(int argc, char **argv)
 
     // PROBE
 
-    for (int i = 0; i < 586; i++) {
+    for (int i = 0; i < packet_count; i++) {
         uint8_t *d= tx_buf + (i % packet_count) * UBUF_DEFAULT_SIZE_A;
         d[0] = kPayloadTypeProbe;
         put_16le(&d[1], seq++);
