@@ -47,7 +47,6 @@
 
 #include "util.h"
 
-#define CTRL_PORT 1234
 static const unsigned int packet_count = 586;
 
 static char *src;
@@ -55,6 +54,7 @@ static char *dst;
 static int fd;
 static int sock;
 
+static int ctrl_port = 1234;
 static char *dst_addr;
 
 static struct fi_info *fi;
@@ -307,7 +307,7 @@ static int conn(void)
     strcpy(pkt.senders_ip_str, src);
     pkt.senders_gid_array[0] = '\0';
     strcpy(pkt.senders_stream_name_str, "foobar");
-    pkt.senders_control_dest_port = CTRL_PORT;
+    pkt.senders_control_dest_port = ctrl_port;
 
     ProbeCommand cmd[3] = {
         kProbeCommandReset, 
@@ -381,12 +381,20 @@ int main(int argc, char **argv)
     struct sockaddr_in addr = {
         .sin_family = AF_INET,
         .sin_addr = a_src,
-        .sin_port = htons(CTRL_PORT),
+        .sin_port = htons(ctrl_port),
     };
 
-    if (bind(sock, (struct sockaddr*)&addr, (socklen_t)sizeof(addr)) < 0) {
-        perror("bind");
-        return 6;
+    for (;;) {
+        unsigned int seed = ctrl_port;
+        if (bind(sock, (struct sockaddr*)&addr, (socklen_t)sizeof(addr)) < 0) {
+            perror("bind");
+            usleep(100000);
+            ctrl_port = rand_r(&seed) & 0xffff;
+            printf("ctrl port %u\n", ctrl_port);
+            addr.sin_port = htons(ctrl_port);
+            continue;
+        } else
+            break;
     }
 
     addr.sin_port = htons(port);
