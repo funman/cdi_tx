@@ -423,6 +423,7 @@ int main(int argc, char **argv)
     static uint8_t pic[1920*1080*5/2]; /* 40 bits per 2 pixels (UYVY) */
 
 
+    uint64_t t = 0;
     for (;;) {
         if (get_cq_comp())
             fprintf(stderr, "get_cq_comp failed\n");
@@ -439,6 +440,14 @@ int main(int argc, char **argv)
             uint8_t *pkt_buf = tx_buf + ((rx_idx + i) % packet_count) * UBUF_DEFAULT_SIZE_A;
             bool is_offset = seq != 0;
             if (!is_offset) {
+                uint64_t prev = t;
+                t = now();
+                if (prev) {
+                    if (t - prev < 40000000) {
+                        usleep(40000 - ((t - prev) / 1000));
+                    }
+                }
+
                 if (fread(pic, sizeof(pic), 1, stdin) != 1) {
                     perror("fread");
                     goto end;
