@@ -5,6 +5,22 @@
 
 #include "util.h"
 
+bool is_efa(void)
+{
+    FILE *f = fopen("/sys/class/infiniband_verbs/uverbs0/device/vendor", "r");
+    if (!f)
+        return false;
+
+    unsigned int vendor;
+    int ret = fscanf(f, "0x%0x", &vendor);
+    fclose(f);
+
+    if (ret != 1)
+        return false;
+
+    return vendor == 0x1d0f;
+}
+
 uint64_t now(void)
 {
     struct timespec ts;

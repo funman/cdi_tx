@@ -316,7 +316,8 @@ static void fisrc_alloc(void)
     hints->domain_attr->mr_mode =
         FI_MR_LOCAL | FI_MR_ALLOCATED /*| FI_MR_PROV_KEY */| FI_MR_VIRT_ADDR;
 
-    hints->fabric_attr->prov_name = (char*)"sockets";
+    bool efa = is_efa();
+    hints->fabric_attr->prov_name = efa ? (char*)"efa" : (char*)"sockets";
     hints->ep_attr->type = FI_EP_RDM;
     hints->domain_attr->resource_mgmt = FI_RM_ENABLED;
     hints->domain_attr->threading = FI_THREAD_DOMAIN;

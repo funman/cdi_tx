@@ -1,4 +1,5 @@
 #include <inttypes.h>
+#include <stdbool.h>
 #include <stdio.h>
 
 #define unlikely(x)     __builtin_expect(!!(x),0)
@@ -85,6 +86,6 @@ static uint16_t get_16le(const uint8_t *buf)
     return val;
 }
 
+bool is_efa(void);
 uint64_t now(void);
 uint16_t CalculateChecksum(const uint8_t *buf, int size, const uint8_t *csum_pos);
-
