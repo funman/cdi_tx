@@ -358,7 +358,7 @@ static void data_pkt(unsigned int idx)
     size_t s = UBUF_DEFAULT_SIZE;
 
     *pkt_buf++ = is_offset ? kPayloadTypeDataOffset : kPayloadTypeData; s--;
-    put_16le(pkt_buf, seq++); pkt_buf += 2; s -= 2;
+    put_16le(pkt_buf, seq); pkt_buf += 2; s -= 2;
     put_16le(pkt_buf, num); pkt_buf += 2; s -= 2;
     put_32le(pkt_buf, id++); pkt_buf += 4; s -= 4;
 
@@ -402,7 +402,7 @@ static void data_pkt(unsigned int idx)
 
     offset += s;
 
-    if (seq == packet_count) {
+    if (seq++ == packet_count) {
         num++;
         seq = 0;
         offset = 0;
