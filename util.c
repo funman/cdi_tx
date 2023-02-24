@@ -12,7 +12,7 @@ bool is_efa(void)
         return false;
 
     unsigned int vendor;
-    int ret = fscanf(f, "0x%0x", &vendor);
+    int ret = fscanf(f, "0x%x", &vendor);
     fclose(f);
 
     if (ret != 1)
