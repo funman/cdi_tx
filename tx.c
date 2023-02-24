@@ -279,7 +279,7 @@ static int conn(void)
         -> protocolversion
         <- ack
         <- connected
-            -> ping 
+            -> ping
             <- ack
     */
 
@@ -295,7 +295,7 @@ static int conn(void)
         uint16_t senders_control_dest_port;
         uint16_t control_packet_num;
         uint16_t checksum;
-        bool requires_ack; 
+        bool requires_ack;
     } pkt;
 
     memset(&pkt, 0, sizeof(pkt));
@@ -310,7 +310,7 @@ static int conn(void)
     pkt.senders_control_dest_port = ctrl_port;
 
     ProbeCommand cmd[3] = {
-        kProbeCommandReset, 
+        kProbeCommandReset,
         kProbeCommandProtocolVersion,
         kProbeCommandPing,
     };
