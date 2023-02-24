@@ -350,23 +350,10 @@ static int conn(void)
     return 0;
 }
 
-static void data_pkt(uint64_t *t, unsigned int idx)
+static void data_pkt(unsigned int idx)
 {
     uint8_t *pkt_buf = tx_buf + ((rx_idx + idx) % packet_count) * UBUF_DEFAULT_SIZE_A;
     bool is_offset = seq != 0;
-    if (!is_offset) {
-        uint64_t prev = *t;
-        *t = now();
-        if (prev) {
-            prev = (*t - prev) / 1000;
-            if (prev < 40000) {
-                prev = 40000 - prev;
-                usleep(prev);
-//                printf("sleeping %" PRIu64 " us\n", prev);
-            }
-        }
-    }
-
     size_t s = UBUF_DEFAULT_SIZE;
 
     *pkt_buf++ = is_offset ? kPayloadTypeDataOffset : kPayloadTypeData; s--;
@@ -422,7 +409,7 @@ static void data_pkt(uint64_t *t, unsigned int idx)
     }
 }
 
-static void data(uint64_t *t) // seq pic num id
+static void data(void)
 {
     if (get_cq_comp())
         fprintf(stderr, "get_cq_comp failed\n");
@@ -432,7 +419,7 @@ static void data(uint64_t *t) // seq pic num id
         avail = 586 - seq;
 
     for (unsigned int i = 0; i < avail; i++) {
-        data_pkt(t, i);
+        data_pkt(i);
     }
 
     for (unsigned int i = 0; i < avail; i++) {
@@ -523,11 +510,23 @@ int main(int argc, char **argv)
 
     uint64_t t = now();
     for (;;) {
-        if (seq == 0 && fread(pic, sizeof(pic), 1, stdin) != 1) {
-            perror("fread");
-            goto end;
+        if (seq == 0) {
+            if (fread(pic, sizeof(pic), 1, stdin) != 1) {
+                perror("fread");
+                goto end;
+            }
+            uint64_t prev = t;
+            t = now();
+            if (prev) {
+                prev = (t - prev) / 1000;
+                if (prev < 40000) {
+                    prev = 40000 - prev;
+                    usleep(prev);
+                    printf("sleeping %" PRIu64 " us\n", prev);
+                }
+            }
         }
-        data(&t);
+        data();
     }
 
 end:
