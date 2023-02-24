@@ -350,92 +350,69 @@ static int conn(void)
     return 0;
 }
 
-
-static int data(uint64_t *t) // seq pic num id
+static void data_pkt(uint64_t *t, unsigned int idx)
 {
-    if (get_cq_comp())
-        fprintf(stderr, "get_cq_comp failed\n");
-
-    int avail = packet_count - (rx_idx - tx_idx);
-    if (avail == 0) {
-        return 0;
-    }
-
-
-    if (avail > 586 - seq)
-        avail = 586 - seq;
-
-    for (int i = 0; i < avail; i++) {
-        uint8_t *pkt_buf = tx_buf + ((rx_idx + i) % packet_count) * UBUF_DEFAULT_SIZE_A;
-        bool is_offset = seq != 0;
-        if (!is_offset) {
-            uint64_t prev = *t;
-            *t = now();
-            if (prev) {
-                prev = (*t - prev) / 1000;
-                if (prev < 40000) {
-                    prev = 40000 - prev;
-                    usleep(prev);
-                    printf("sleeping %" PRIu64 " us\n", prev);
-                }
-            }
-
-            if (fread(pic, sizeof(pic), 1, stdin) != 1) {
-                perror("fread");
-                return 1;
+    uint8_t *pkt_buf = tx_buf + ((rx_idx + idx) % packet_count) * UBUF_DEFAULT_SIZE_A;
+    bool is_offset = seq != 0;
+    if (!is_offset) {
+        uint64_t prev = *t;
+        *t = now();
+        if (prev) {
+            prev = (*t - prev) / 1000;
+            if (prev < 40000) {
+                prev = 40000 - prev;
+                usleep(prev);
+//                printf("sleeping %" PRIu64 " us\n", prev);
             }
         }
-
-        size_t s = UBUF_DEFAULT_SIZE;
-
-        *pkt_buf++ = is_offset ? kPayloadTypeDataOffset : kPayloadTypeData; s--;
-        put_16le(pkt_buf, seq++); pkt_buf += 2; s -= 2;
-        put_16le(pkt_buf, num); pkt_buf += 2; s -= 2;
-        put_32le(pkt_buf, id++); pkt_buf += 4; s -= 4;
-
-        if (is_offset) {
-            put_32le(pkt_buf, offset); pkt_buf += 4; s -= 4;
-        } else {
-            uint32_t total_payload_size = 5184000;
-            uint64_t max_latency_usec = 16666;
-            uint32_t sec = 0;
-            uint32_t nsec = 0;
-            uint64_t payload_user_data = 0;
-            uint64_t tx_start_time_usec = 0;
-            uint16_t extra_data_size = 1290;
-
-            put_32le(pkt_buf, total_payload_size); pkt_buf += 4; s -= 4;
-            put_64le(pkt_buf, max_latency_usec); pkt_buf += 8; s -= 8;
-            put_32le(pkt_buf, sec); pkt_buf += 4; s -= 4;
-            put_32le(pkt_buf, nsec); pkt_buf += 4; s -= 4;
-            put_64le(pkt_buf, payload_user_data); pkt_buf += 8; s -= 8;
-            put_16le(pkt_buf, extra_data_size); pkt_buf += 2; s -= 2;
-            put_64le(pkt_buf, tx_start_time_usec); pkt_buf += 8; s -= 8;
-
-            assert(s >= extra_data_size);
-            assert(extra_data_size == 2 + 257 + 1024 + 3 + 4);
-
-            uint16_t stream_id = 0;
-            put_16le(pkt_buf, stream_id); pkt_buf += 2; s -= 2;
-            snprintf(pkt_buf, 257, "https://cdi.elemental.com/specs/baseline-video");
-            pkt_buf += 257; s -= 257;       // uri
-            uint32_t data_size = snprintf(pkt_buf, 1024, "cdi_profile_version=01.00; sampling=YCbCr422; depth=10; width=1920; height=1080; exactframerate=25; colorimetry=BT709; RANGE=Full;");
-            pkt_buf += 1024; s -= 1024;     // data
-            pkt_buf += 3; s -= 3;           // packing
-            put_32le(pkt_buf, data_size); pkt_buf += 4; s -= 4;
-        }
-
-        s -= (s%5); // make TAG happy
-        if (offset + s > sizeof(pic))
-            s = sizeof(pic) - offset;
-
-        memcpy(pkt_buf, &pic[offset], s);
-
-        offset += s;
     }
-    for (int i = 0; i < avail; i++) {
-        tx();
+
+    size_t s = UBUF_DEFAULT_SIZE;
+
+    *pkt_buf++ = is_offset ? kPayloadTypeDataOffset : kPayloadTypeData; s--;
+    put_16le(pkt_buf, seq++); pkt_buf += 2; s -= 2;
+    put_16le(pkt_buf, num); pkt_buf += 2; s -= 2;
+    put_32le(pkt_buf, id++); pkt_buf += 4; s -= 4;
+
+    if (is_offset) {
+        put_32le(pkt_buf, offset); pkt_buf += 4; s -= 4;
+    } else {
+        uint32_t total_payload_size = 5184000;
+        uint64_t max_latency_usec = 16666;
+        uint32_t sec = 0;
+        uint32_t nsec = 0;
+        uint64_t payload_user_data = 0;
+        uint64_t tx_start_time_usec = 0;
+        uint16_t extra_data_size = 1290;
+
+        put_32le(pkt_buf, total_payload_size); pkt_buf += 4; s -= 4;
+        put_64le(pkt_buf, max_latency_usec); pkt_buf += 8; s -= 8;
+        put_32le(pkt_buf, sec); pkt_buf += 4; s -= 4;
+        put_32le(pkt_buf, nsec); pkt_buf += 4; s -= 4;
+        put_64le(pkt_buf, payload_user_data); pkt_buf += 8; s -= 8;
+        put_16le(pkt_buf, extra_data_size); pkt_buf += 2; s -= 2;
+        put_64le(pkt_buf, tx_start_time_usec); pkt_buf += 8; s -= 8;
+
+        assert(s >= extra_data_size);
+        assert(extra_data_size == 2 + 257 + 1024 + 3 + 4);
+
+        uint16_t stream_id = 0;
+        put_16le(pkt_buf, stream_id); pkt_buf += 2; s -= 2;
+        snprintf(pkt_buf, 257, "https://cdi.elemental.com/specs/baseline-video");
+        pkt_buf += 257; s -= 257;       // uri
+        uint32_t data_size = snprintf(pkt_buf, 1024, "cdi_profile_version=01.00; sampling=YCbCr422; depth=10; width=1920; height=1080; exactframerate=25; colorimetry=BT709; RANGE=Full;");
+        pkt_buf += 1024; s -= 1024;     // data
+        pkt_buf += 3; s -= 3;           // packing
+        put_32le(pkt_buf, data_size); pkt_buf += 4; s -= 4;
     }
+
+    s -= (s%5); // round to pixel boundary
+    if (offset + s > sizeof(pic))
+        s = sizeof(pic) - offset;
+
+    memcpy(pkt_buf, &pic[offset], s);
+
+    offset += s;
 
     if (seq == 586) { // (1920*1080*5/2+1290+36)/(8864-9-4) == 585.846345 pkts per frame
         num++;
@@ -443,8 +420,24 @@ static int data(uint64_t *t) // seq pic num id
         offset = 0;
         //            printf(".\n");
     }
+}
 
-    return 0;
+static void data(uint64_t *t) // seq pic num id
+{
+    if (get_cq_comp())
+        fprintf(stderr, "get_cq_comp failed\n");
+
+    unsigned int avail = packet_count - (rx_idx - tx_idx);
+    if (avail > 586 - seq)
+        avail = 586 - seq;
+
+    for (unsigned int i = 0; i < avail; i++) {
+        data_pkt(t, i);
+    }
+
+    for (unsigned int i = 0; i < avail; i++) {
+        tx();
+    }
 }
 
 int main(int argc, char **argv)
@@ -518,19 +511,24 @@ int main(int argc, char **argv)
     // PROBE
 
     for (int i = 0; i < 586; i++) {
-        uint8_t *data_pkt = tx_buf + (i % packet_count) * UBUF_DEFAULT_SIZE_A;
-        data_pkt[0] = kPayloadTypeProbe;
-        put_16le(&data_pkt[1], seq++);
-        put_16le(&data_pkt[3], num);
-        put_32le(&data_pkt[5], id++);
+        uint8_t *d= tx_buf + (i % packet_count) * UBUF_DEFAULT_SIZE_A;
+        d[0] = kPayloadTypeProbe;
+        put_16le(&d[1], seq++);
+        put_16le(&d[3], num);
+        put_32le(&d[5], id++);
         tx();
     }
 
     seq = id = 0;
 
     uint64_t t = now();
-    while (!data(&t))
-        ;
+    for (;;) {
+        if (seq == 0 && fread(pic, sizeof(pic), 1, stdin) != 1) {
+            perror("fread");
+            goto end;
+        }
+        data(&t);
+    }
 
 end:
     tx_free();
