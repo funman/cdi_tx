@@ -494,6 +494,8 @@ int main(int argc, char **argv)
             perror("bind");
             usleep(100000);
             ctrl_port = rand_r(&seed) & 0xffff;
+            if (ctrl_port < 1024)
+                ctrl_port += 1024;
             printf("ctrl port %u\n", ctrl_port);
             addr.sin_port = htons(ctrl_port);
             continue;
