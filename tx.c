@@ -493,6 +493,7 @@ int main(int argc, char **argv)
                 put_32le(pkt_buf, data_size); pkt_buf += 4; s -= 4;
             }
 
+            s -= (s%5); // make TAG happy
             if (offset + s > sizeof(pic))
                 s = sizeof(pic) - offset;
 
