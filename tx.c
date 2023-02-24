@@ -418,13 +418,11 @@ static void data(void)
     if (avail > packet_count - seq)
         avail = packet_count - seq;
 
-    for (unsigned int i = 0; i < avail; i++) {
+    for (unsigned int i = 0; i < avail; i++)
         data_pkt(i);
-    }
 
-    for (unsigned int i = 0; i < avail; i++) {
+    for (unsigned int i = 0; i < avail; i++)
         tx();
-    }
 }
 
 int main(int argc, char **argv)
