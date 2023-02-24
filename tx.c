@@ -402,7 +402,7 @@ static void data_pkt(unsigned int idx)
 
     offset += s;
 
-    if (seq++ == packet_count) {
+    if (++seq == packet_count) {
         num++;
         seq = 0;
         offset = 0;
