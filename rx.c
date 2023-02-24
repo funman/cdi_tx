@@ -463,7 +463,7 @@ static void fisrc_worker2(void)
 
     while (!rx()) {
 
-    printf("rxidx %zu\n", rxidx);
+    //printf("rxidx %zu\n", rxidx);
 
     uint8_t *buffer = rx_buf + (rxidx++ % packet_count) * UBUF_DEFAULT_SIZE_A;
     ssize_t s = UBUF_DEFAULT_SIZE;
@@ -479,9 +479,9 @@ static void fisrc_worker2(void)
     static int prev_id;
     if (id != prev_id + 1)
         printf("\terr\n");
-    printf("id %d\n", id);
+    //printf("id %d\n", id);
 
-    printf("id - rx %zu\n", rxidx - id);
+    //printf("id - rx %zu\n", rxidx - id);
     prev_id = id;
 
     buffer += 9;
@@ -546,12 +546,13 @@ static void fisrc_worker2(void)
     }
 
     {
-//    printf("%s(offset=%zu) at %.6f\n", __func__, offset, ((float)systime) / 27000000.);
+//    printf("%s(offset=%zu) at %.6f\n", __func__, offset, ((float)systime) / 1000000.);
         static uint64_t start;
         if (offset == 0)
             start = systime;
         if (offset + s > 5184000) {
-            printf("got pic after %.6f ms\n", ((float)(systime - start)) / 27000.);
+            printf("got pic after %.6f ms\n", ((float)(systime - start)) / 1000000.);
+            start = systime;
         }
     }
 
