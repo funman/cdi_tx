@@ -47,8 +47,13 @@
 
 #include "util.h"
 
-// (1920*1080*5/2+1290+36)/(8864-9-4) == 585.846345 pkts per frame
-static const unsigned int packet_count = 586;
+static uint16_t width = 1920;
+static uint16_t height = 1080;
+static uint16_t fps_num = 25;
+static uint16_t fps_den = 1;
+static size_t pic_size;
+
+static unsigned int packet_count;
 
 static char *src;
 static char *dst;
@@ -88,9 +93,6 @@ static struct uref *output_uref;
 
 static uint16_t pkt_num;
 static char ip[INET6_ADDRSTRLEN];
-
-static size_t width;
-static size_t height;
 
 static size_t buf_size;
 static bool use_free;
@@ -388,15 +390,16 @@ static void data_pkt(unsigned int idx)
         put_16le(pkt_buf, stream_id); pkt_buf += 2; s -= 2;
         snprintf(pkt_buf, 257, "https://cdi.elemental.com/specs/baseline-video");
         pkt_buf += 257; s -= 257;       // uri
-        uint32_t data_size = snprintf(pkt_buf, 1024, "cdi_profile_version=01.00; sampling=YCbCr422; depth=10; width=1920; height=1080; exactframerate=25; colorimetry=BT709; RANGE=Full;");
+        uint32_t data_size = snprintf(pkt_buf, 1024, "cdi_profile_version=01.00; sampling=YCbCr422; depth=10; width=%hu; height=%hu; exactframerate=%u/%u; colorimetry=BT709; RANGE=Full;",
+            width, height, fps_num, fps_den);
         pkt_buf += 1024; s -= 1024;     // data
         pkt_buf += 3; s -= 3;           // packing
         put_32le(pkt_buf, data_size); pkt_buf += 4; s -= 4;
     }
 
     s -= (s%5); // round to pixel boundary
-    if (offset + s > sizeof(pic))
-        s = sizeof(pic) - offset;
+    if (offset + s > pic_size)
+        s = pic_size - offset;
 
     memcpy(pkt_buf, &pic[offset], s);
 
@@ -434,6 +437,16 @@ int main(int argc, char **argv)
 
     src = argv[1];
     dst = argv[2];
+
+    pic_size = width * height * 5 / 2;
+    const size_t total_pic_size = pic_size + 1290 /* extra data */ + 36 /* packet #0 */;
+    const size_t packet_size = 8864 /* ? */ - 9 /* seq/num header */ - 4 /* offset */;
+    packet_count = (total_pic_size + packet_size - 1) / packet_size;
+    if (width == 1920)
+        assert(packet_count == 586);
+
+    printf("pic s %zu packet count %u\n", pic_size, packet_count);
+
     char *p = strchr(dst, ':');
     if (!p) {
         fprintf(stderr, "Invalid port\n");
@@ -509,7 +522,7 @@ int main(int argc, char **argv)
     uint64_t t = now();
     for (;;) {
         if (seq == 0) {
-            if (fread(pic, sizeof(pic), 1, stdin) != 1) {
+            if (fread(pic, pic_size, 1, stdin) != 1) {
                 perror("fread");
                 goto end;
             }
