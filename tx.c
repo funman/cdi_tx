@@ -47,11 +47,12 @@
 
 #include "util.h"
 
-static uint16_t width = 1920;
-static uint16_t height = 1080;
-static uint16_t fps_num = 25;
+static uint16_t width = 1280;
+static uint16_t height = 720;
+static uint16_t fps_num = 50;
 static uint16_t fps_den = 1;
 static size_t pic_size;
+static uint64_t pic_duration;
 
 static unsigned int packet_count;
 
@@ -367,8 +368,8 @@ static void data_pkt(unsigned int idx)
     if (is_offset) {
         put_32le(pkt_buf, offset); pkt_buf += 4; s -= 4;
     } else {
-        uint32_t total_payload_size = 5184000;
-        uint64_t max_latency_usec = 16666;
+        uint32_t total_payload_size = width * height * 5 / 2;
+        uint64_t max_latency_usec = UINT64_C(1000000) * fps_den / fps_num;;
         uint32_t sec = 0;
         uint32_t nsec = 0;
         uint64_t payload_user_data = 0;
@@ -406,6 +407,7 @@ static void data_pkt(unsigned int idx)
     offset += s;
 
     if (++seq == packet_count) {
+        assert(offset == pic_size);
         num++;
         seq = 0;
         offset = 0;
@@ -442,10 +444,8 @@ int main(int argc, char **argv)
     const size_t total_pic_size = pic_size + 1290 /* extra data */ + 36 /* packet #0 */;
     const size_t packet_size = 8864 /* ? */ - 9 /* seq/num header */ - 4 /* offset */;
     packet_count = (total_pic_size + packet_size - 1) / packet_size;
-    if (width == 1920)
-        assert(packet_count == 586);
-
-    printf("pic s %zu packet count %u\n", pic_size, packet_count);
+    pic_duration = UINT64_C(1000000) * fps_den / fps_num;;
+    printf("pkt count %u\n", packet_count);
 
     char *p = strchr(dst, ':');
     if (!p) {
@@ -530,8 +530,8 @@ int main(int argc, char **argv)
             t = now();
             if (prev) {
                 prev = (t - prev) / 1000;
-                if (prev < 40000) {
-                    prev = 40000 - prev;
+                if (prev < pic_duration) {
+                    prev = pic_duration - prev;
                     usleep(prev);
                     printf("sleeping %" PRIu64 " us\n", prev);
                 }
