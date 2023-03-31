@@ -442,10 +442,10 @@ int main(int argc, char **argv)
 
     pic_size = width * height * 5 / 2;
     const size_t total_pic_size = pic_size + 1290 /* extra data */ + 36 /* packet #0 */;
-    const size_t packet_size = 8864 /* ? */ - 9 /* seq/num header */ - 4 /* offset */;
+    size_t packet_size = 8864 /* ? */ - 9 /* seq/num header */ - 4 /* offset */;
+    packet_size -= (packet_size % 5);
     packet_count = (total_pic_size + packet_size - 1) / packet_size;
     pic_duration = UINT64_C(1000000) * fps_den / fps_num;;
-    printf("pkt count %u\n", packet_count);
 
     char *p = strchr(dst, ':');
     if (!p) {
