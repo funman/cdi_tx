@@ -47,10 +47,11 @@
 
 #include "util.h"
 
-static uint16_t width = 1280;
-static uint16_t height = 720;
-static uint16_t fps_num = 50;
+static uint16_t width = 1920;
+static uint16_t height = 1080;
+static uint16_t fps_num = 25;
 static uint16_t fps_den = 1;
+static bool interlaced = true;
 static size_t pic_size;
 static uint64_t pic_duration;
 
@@ -391,8 +392,8 @@ static void data_pkt(unsigned int idx)
         put_16le(pkt_buf, stream_id); pkt_buf += 2; s -= 2;
         snprintf(pkt_buf, 257, "https://cdi.elemental.com/specs/baseline-video");
         pkt_buf += 257; s -= 257;       // uri
-        uint32_t data_size = snprintf(pkt_buf, 1024, "cdi_profile_version=01.00; sampling=YCbCr422; depth=10; width=%hu; height=%hu; exactframerate=%u/%u; colorimetry=BT709; RANGE=Full;",
-            width, height, fps_num, fps_den);
+        uint32_t data_size = snprintf(pkt_buf, 1024, "cdi_profile_version=01.00; sampling=YCbCr422; depth=10;%s width=%hu; height=%hu; exactframerate=%u/%u; colorimetry=BT709; RANGE=Full;",
+            interlaced ? " interlace;" : "", width, height, fps_num, fps_den);
         pkt_buf += 1024; s -= 1024;     // data
         pkt_buf += 3; s -= 3;           // packing
         put_32le(pkt_buf, data_size); pkt_buf += 4; s -= 4;
